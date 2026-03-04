@@ -1,0 +1,45 @@
+{
+  "name": "haops-mcp-server",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server for HAOps (Human-Agent Operations) - enables Claude to manage projects, modules, features, and issues",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint src --ext .ts",
+    "test": "jest",
+    "test:unit": "jest src/",
+    "test:integration": "jest tests/integration/",
+    "test:all": "jest"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "haops",
+    "anthropic",
+    "claude"
+  ],
+  "author": "Todor Branzov",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.21.0",
+    "@typescript-eslint/parser": "^8.21.0",
+    "eslint": "^9.19.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

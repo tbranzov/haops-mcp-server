@@ -1,0 +1,1162 @@
+import axios, { AxiosInstance, AxiosError } from 'axios';
+import type {
+  Project,
+  Module,
+  Feature,
+  Issue,
+  Discussion,
+  DiscussionMessage,
+  DirectMessage,
+  CreateModuleRequest,
+  UpdateModuleRequest,
+  CreateFeatureRequest,
+  UpdateFeatureRequest,
+  CreateIssueRequest,
+  UpdateIssueRequest,
+  CreateDiscussionRequest,
+  UpdateDiscussionRequest,
+  CreateDiscussionMessageRequest,
+  CreateDirectMessageRequest,
+  ProjectMember,
+  ProjectMemberRole,
+  AgentMemory,
+  MemoryLogEntry,
+  MemoryEntityType,
+  MemoryTag,
+} from '../types/entities.js';
+
+interface PaginatedResponse<T> {
+  data: T[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface ListFilters {
+  status?: string;
+  priority?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ModuleFilters extends ListFilters {
+  ownerId?: string;
+}
+
+export interface IssueFilters extends ListFilters {
+  assignedTo?: string;
+  type?: string;
+}
+
+export class HAOpsApiError extends Error {
+  constructor(
+    message: string,
+    public statusCode?: number,
+    public response?: unknown
+  ) {
+    super(message);
+    this.name = 'HAOpsApiError';
+  }
+}
+
+export class HAOpsApiClient {
+  private axios: AxiosInstance;
+  private projectIdCache = new Map<string, string>();
+
+  constructor(baseURL: string, apiKey: string) {
+    this.axios = axios.create({
+      baseURL,
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 10000,
+    });
+  }
+
+  private handleError(error: unknown): never {
+    if (axios.isAxiosError(error)) {
+      const axiosError = error as AxiosError<{ error?: string }>;
+      const message = axiosError.response?.data?.error || axiosError.message;
+      const statusCode = axiosError.response?.status;
+      throw new HAOpsApiError(message, statusCode, axiosError.response?.data);
+    }
+    throw error;
+  }
+
+  // Generic HTTP request method for new endpoints
+  async request(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, data?: Record<string, unknown>): Promise<unknown> {
+    try {
+      const response = await this.axios.request({ method, url, data });
+      return response.data;
+    } catch (error) {
+      this.handleError(error);
+    }
+  }
+
+  // Generic binary request (for endpoints that return files/ZIPs)
+  async requestBinary(method: 'GET' | 'POST', url: string, data?: Record<string, unknown>): Promise<Buffer> {
+    try {
+      const response = await this.axios.request({ method, url, data, responseType: 'arraybuffer' });
+      return Buffer.from(response.data);
+    } catch (error) {
+      this.handleError(error);
+    }
+  }
+
+  // Generic text request (for export endpoints that return plain text/markdown)
+  async requestText(method: 'GET' | 'POST', url: string): Promise<string> {
+    try {
+      const response = await this.axios.request({ method, url, responseType: 'text' });
+      return typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+    } catch (error) {
+      this.handleError(error);
+      return '';
+    }
+  }
+
+  // Slug → UUID resolver (cached)
+  async resolveProjectId(slug: string): Promise<string> {
+    if (this.projectIdCache.has(slug)) {
+      return this.projectIdCache.get(slug)!;
+    }
+    const project = await this.getProject(slug);
+    this.projectIdCache.set(slug, project.id);
+    return project.id;
+  }
+
+  // Projects
+  async listProjects(): Promise<Project[]> {
+    try {
+      const response = await this.axios.get<Project[]>('/api/projects');
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getProject(slug: string): Promise<Project> {
+    try {
+      const response = await this.axios.get<Project>(`/api/projects/${slug}`);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // Modules — flat routes: /api/modules
+  async listModules(projectSlug: string, filters?: ModuleFilters): Promise<Module[]> {
+    try {
+      const projectId = await this.resolveProjectId(projectSlug);
+      const params: Record<string, unknown> = { projectId, limit: filters?.limit || 100 };
+      if (filters?.offset) params.page = Math.floor(filters.offset / (filters.limit || 100)) + 1;
+      if (filters?.status) params.status = filters.status;
+      if (filters?.priority) params.priority = filters.priority;
+      if (filters?.ownerId) params.ownerId = filters.ownerId;
+      const response = await this.axios.get<PaginatedResponse<Module>>('/api/modules', { params });
+      return response.data.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async listModulesWithMeta(projectSlug: string, filters?: ModuleFilters): Promise<PaginatedResponse<Module>> {
+    try {
+      const projectId = await this.resolveProjectId(projectSlug);
+      const params: Record<string, unknown> = { projectId, limit: filters?.limit || 100 };
+      if (filters?.offset) params.page = Math.floor(filters.offset / (filters.limit || 100)) + 1;
+      if (filters?.status) params.status = filters.status;
+      if (filters?.priority) params.priority = filters.priority;
+      if (filters?.ownerId) params.ownerId = filters.ownerId;
+      const response = await this.axios.get<PaginatedResponse<Module>>('/api/modules', { params });
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getModule(moduleId: string): Promise<Module> {
+    try {
+      const response = await this.axios.get<Module>(`/api/modules/${moduleId}`);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async createModule(projectSlug: string, data: Omit<CreateModuleRequest, 'projectId'>): Promise<Module> {
+    try {
+      const projectId = await this.resolveProjectId(projectSlug);
+      const response = await this.axios.post<Module>('/api/modules', { ...data, projectId });
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async updateModule(moduleId: string, data: UpdateModuleRequest): Promise<Module> {
+    try {
+      const response = await this.axios.put<Module>(`/api/modules/${moduleId}`, data);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async deleteModule(moduleId: string): Promise<{ message: string }> {
+    try {
+      const response = await this.axios.delete<{ message: string }>(`/api/modules/${moduleId}`);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async countFeaturesByModule(moduleId: string): Promise<{ count: number; features: Feature[] }> {
+    try {
+      const response = await this.axios.get<PaginatedResponse<Feature>>('/api/features', {
+        params: { moduleId, limit: 100 },
+      });
+      return { count: response.data.total, features: response.data.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // Features — flat routes: /api/features
+  async listFeatures(projectSlug: string, filters?: ListFilters): Promise<Feature[]> {
+    try {
+      // Features filter by moduleId, not projectId.
+      // List all modules first, then fetch features for each.
+      const modules = await this.listModules(projectSlug);
+      const allFeatures: Feature[] = [];
+      for (const mod of modules) {
+        const params: Record<string, unknown> = { moduleId: mod.id, limit: 100 };
+        if (filters?.status) params.status = filters.status;
+        if (filters?.priority) params.priority = filters.priority;
+        const response = await this.axios.get<PaginatedResponse<Feature>>('/api/features', { params });
+        allFeatures.push(...response.data.data);
+      }
+      return allFeatures;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getFeature(featureId: string): Promise<Feature> {
+    try {
+      const response = await this.axios.get<Feature>(`/api/features/${featureId}`);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async createFeature(data: CreateFeatureRequest): Promise<Feature> {
+    try {
+      const response = await this.axios.post<Feature>('/api/features', data);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async updateFeature(featureId: string, data: UpdateFeatureRequest): Promise<Feature> {
+    try {
+      const response = await this.axios.put<Feature>(`/api/features/${featureId}`, data);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async deleteFeature(featureId: string): Promise<{ message: string }> {
+    try {
+      const response = await this.axios.delete<{ message: string }>(`/api/features/${featureId}`);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async countIssuesByFeature(featureId: string): Promise<{ count: number; issues: Issue[] }> {
+    try {
+      const response = await this.axios.get<PaginatedResponse<Issue>>('/api/issues', {
+        params: { featureId, limit: 100 },
+      });
+      return { count: response.data.total, issues: response.data.data };
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // Issues — flat routes: /api/issues
+  async listIssues(projectSlug: string, filters?: IssueFilters): Promise<Issue[]> {
+    try {
+      // Issues filter by featureId, not projectId.
+      // List all features first, then fetch issues for each.
+      const features = await this.listFeatures(projectSlug);
+      const allIssues: Issue[] = [];
+      for (const feat of features) {
+        const params: Record<string, unknown> = { featureId: feat.id, limit: 100 };
+        if (filters?.status) params.status = filters.status;
+        if (filters?.priority) params.priority = filters.priority;
+        if (filters?.assignedTo) params.assignedTo = filters.assignedTo;
+        if (filters?.type) params.type = filters.type;
+        const response = await this.axios.get<PaginatedResponse<Issue>>('/api/issues', { params });
+        allIssues.push(...response.data.data);
+      }
+      return allIssues;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getIssue(issueId: string): Promise<Issue> {
+    try {
+      const response = await this.axios.get<Issue>(`/api/issues/${issueId}`);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async createIssue(data: CreateIssueRequest): Promise<Issue> {
+    try {
+      const response = await this.axios.post<Issue>('/api/issues', data);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async updateIssue(issueId: string, data: UpdateIssueRequest): Promise<Issue> {
+    try {
+      const response = await this.axios.put<Issue>(`/api/issues/${issueId}`, data);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async deleteIssue(issueId: string): Promise<{ message: string }> {
+    try {
+      const response = await this.axios.delete<{ message: string }>(`/api/issues/${issueId}`);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async claimIssue(
+    issueId: string,
+    options?: { checkOnly?: boolean }
+  ): Promise<{
+    success: boolean;
+    message: string;
+    canResume?: boolean;
+    canClaim?: boolean;
+    claimedBy?: string;
+    lastActivity?: string;
+    issue: Issue;
+  }> {
+    try {
+      // 1. GET issue to check status and takenBy
+      const issue = await this.getIssue(issueId);
+
+      // Check if claimable (not done or cancelled)
+      if (issue.status === 'done' || issue.status === 'cancelled') {
+        return {
+          success: false,
+          message: `Cannot claim issue with status: ${issue.status}`,
+          issue,
+        };
+      }
+
+      // Check if already claimed
+      if (issue.takenBy) {
+        // Note: We can't know "my" API key name from client side
+        // So we just return claimedBy info
+        if (options?.checkOnly) {
+          return {
+            success: false,
+            message: `Already claimed by "${issue.takenBy}"`,
+            canClaim: false,
+            claimedBy: issue.takenBy,
+            lastActivity: issue.updatedAt || '',
+            issue,
+          };
+        }
+
+        // Try to claim anyway - server will check if it's the same API key
+        try {
+          const response = await this.axios.put<Issue>(`/api/issues/${issueId}`, {
+            status: 'in-progress',
+          });
+
+          return {
+            success: true,
+            message: 'Already claimed by you',
+            canResume: true,
+            issue: response.data,
+          };
+        } catch (error) {
+          // 409 means another agent owns it
+          if (axios.isAxiosError(error) && error.response?.status === 409) {
+            return {
+              success: false,
+              message: `Already claimed by "${issue.takenBy}"`,
+              claimedBy: issue.takenBy,
+              lastActivity: issue.updatedAt || '',
+              issue,
+            };
+          }
+          throw error;
+        }
+      }
+
+      // Issue is available - check only or claim
+      if (options?.checkOnly) {
+        return {
+          success: true,
+          message: 'Issue is available to claim',
+          canClaim: true,
+          issue,
+        };
+      }
+
+      // Claim the issue (PUT status=in-progress)
+      try {
+        const response = await this.axios.put<Issue>(`/api/issues/${issueId}`, {
+          status: 'in-progress',
+        });
+
+        return {
+          success: true,
+          message: 'Issue claimed successfully',
+          issue: response.data,
+        };
+      } catch (error) {
+        // Race condition - another agent claimed it between GET and PUT
+        if (axios.isAxiosError(error) && error.response?.status === 409) {
+          const errorData = error.response.data as any;
+          let claimedBy = errorData.takenBy;
+
+          // Fallback: if takenBy missing in error response, re-fetch for current data
+          if (!claimedBy) {
+            try {
+              const freshIssue = await this.getIssue(issueId);
+              claimedBy = freshIssue.takenBy || 'unknown';
+              return {
+                success: false,
+                message: 'Race condition: issue was claimed by another agent',
+                claimedBy,
+                issue: freshIssue,
+              };
+            } catch {
+              // If re-fetch also fails, use what we have
+              claimedBy = 'unknown';
+            }
+          }
+
+          return {
+            success: false,
+            message: 'Race condition: issue was claimed by another agent',
+            claimedBy,
+            issue,
+          };
+        }
+        throw error;
+      }
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async bulkUpdateIssues(
+    issueIds: string[],
+    updates: { status?: string; priority?: string; assignedTo?: string }
+  ): Promise<{ updated: number; issues: Issue[] }> {
+    try {
+      const response = await this.axios.patch<{ updated: number; issues: Issue[] }>(
+        '/api/issues/bulk',
+        { issueIds, updates }
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // Health Check — analyzes entities for stale, inconsistent, or problematic states
+  async workEntityHealthCheck(options: {
+    projectId?: string;
+    entityType?: 'module' | 'feature' | 'issue' | 'all';
+    checks?: string[];
+    staleThresholdHours?: number;
+    verbosity?: 'summary' | 'normal' | 'detailed';
+  } = {}): Promise<{
+    summary: { totalChecked: number; issuesFound: number; byType: Record<string, number> };
+    findings?: Array<{
+      type: string;
+      severity: 'error' | 'warning' | 'info';
+      entityType: string;
+      entityId: string;
+      entityTitle: string;
+      takenBy?: string | null;
+      lastActivity?: string;
+      staleDuration?: string;
+      recommendation: string;
+      details?: unknown;
+    }>;
+  }> {
+    const {
+      entityType = 'all',
+      checks: selectedChecks,
+      staleThresholdHours = 24,
+      verbosity = 'normal',
+    } = options;
+
+    const allChecks = [
+      'stale_in_progress',
+      'inconsistent_taken',
+      'orphaned_taken',
+      'multiple_stuck',
+      'long_review',
+      'blocked_without_note',
+    ];
+    const checksToRun = selectedChecks || allChecks;
+
+    type Finding = {
+      type: string;
+      severity: 'error' | 'warning' | 'info';
+      entityType: string;
+      entityId: string;
+      entityTitle: string;
+      takenBy?: string | null;
+      lastActivity?: string;
+      staleDuration?: string;
+      recommendation: string;
+      details?: unknown;
+    };
+
+    const findings: Finding[] = [];
+    let totalChecked = 0;
+    const now = new Date();
+
+    // Fetch projects to iterate
+    const projects = await this.listProjects();
+
+    // Collect all entities
+    const allIssues: Issue[] = [];
+    const allModules: Module[] = [];
+    const allFeatures: Feature[] = [];
+
+    for (const proj of projects) {
+      if (options.projectId && proj.id !== options.projectId) continue;
+
+      if (entityType === 'all' || entityType === 'module') {
+        try {
+          const modules = await this.listModules(proj.slug);
+          allModules.push(...modules);
+        } catch { /* skip if error */ }
+      }
+      if (entityType === 'all' || entityType === 'feature') {
+        try {
+          const features = await this.listFeatures(proj.slug);
+          allFeatures.push(...features);
+        } catch { /* skip if error */ }
+      }
+      if (entityType === 'all' || entityType === 'issue') {
+        try {
+          const issues = await this.listIssues(proj.slug);
+          allIssues.push(...issues);
+        } catch { /* skip if error */ }
+      }
+    }
+
+    totalChecked = allModules.length + allFeatures.length + allIssues.length;
+
+    // Helper: calculate hours since last update
+    const hoursSince = (dateStr: string) => {
+      const diff = now.getTime() - new Date(dateStr).getTime();
+      return diff / (1000 * 60 * 60);
+    };
+
+    const formatDuration = (hours: number) => {
+      if (hours < 1) return `${Math.round(hours * 60)} minutes`;
+      if (hours < 24) return `${Math.round(hours)} hours`;
+      return `${Math.round(hours / 24)} days`;
+    };
+
+    // Check 1: stale_in_progress
+    if (checksToRun.includes('stale_in_progress')) {
+      for (const issue of allIssues) {
+        if (issue.status === 'in-progress') {
+          const hours = hoursSince(issue.updatedAt);
+          if (hours > staleThresholdHours) {
+            findings.push({
+              type: 'stale_in_progress',
+              severity: 'warning',
+              entityType: 'Issue',
+              entityId: issue.id,
+              entityTitle: issue.title,
+              takenBy: issue.takenBy,
+              lastActivity: issue.updatedAt,
+              staleDuration: formatDuration(hours),
+              recommendation: 'Check if agent crashed. Consider releasing claim.',
+              ...(verbosity === 'detailed' && { details: issue }),
+            });
+          }
+        }
+      }
+      for (const mod of allModules) {
+        if (mod.status === 'in-progress') {
+          const hours = hoursSince(mod.updatedAt);
+          if (hours > staleThresholdHours) {
+            findings.push({
+              type: 'stale_in_progress',
+              severity: 'warning',
+              entityType: 'Module',
+              entityId: mod.id,
+              entityTitle: mod.title,
+              lastActivity: mod.updatedAt,
+              staleDuration: formatDuration(hours),
+              recommendation: 'Check if agent crashed. Consider releasing claim.',
+              ...(verbosity === 'detailed' && { details: mod }),
+            });
+          }
+        }
+      }
+      for (const feat of allFeatures) {
+        if (feat.status === 'in-progress') {
+          const hours = hoursSince(feat.updatedAt);
+          if (hours > staleThresholdHours) {
+            findings.push({
+              type: 'stale_in_progress',
+              severity: 'warning',
+              entityType: 'Feature',
+              entityId: feat.id,
+              entityTitle: feat.title,
+              lastActivity: feat.updatedAt,
+              staleDuration: formatDuration(hours),
+              recommendation: 'Check if agent crashed. Consider releasing claim.',
+              ...(verbosity === 'detailed' && { details: feat }),
+            });
+          }
+        }
+      }
+    }
+
+    // Check 2: inconsistent_taken (issues only - takenBy is on issues)
+    if (checksToRun.includes('inconsistent_taken')) {
+      for (const issue of allIssues) {
+        if (issue.takenBy && (issue.status === 'backlog' || issue.status === 'cancelled')) {
+          findings.push({
+            type: 'inconsistent_taken',
+            severity: 'error',
+            entityType: 'Issue',
+            entityId: issue.id,
+            entityTitle: issue.title,
+            takenBy: issue.takenBy,
+            lastActivity: issue.updatedAt,
+            recommendation: 'Data inconsistency. Clear takenBy for backlog/cancelled.',
+            ...(verbosity === 'detailed' && { details: issue }),
+          });
+        }
+      }
+    }
+
+    // Check 3: orphaned_taken - compare takenBy values against real API key names
+    if (checksToRun.includes('orphaned_taken')) {
+      const issuesWithTakenBy = allIssues.filter(i => i.takenBy);
+      if (issuesWithTakenBy.length > 0) {
+        try {
+          // Fetch all API keys from admin endpoint
+          const apiKeysResponse = await this.axios.get<{
+            global: Array<{ name: string }>;
+            project: Array<{ name: string }>;
+          }>('/api/admin/settings/api-keys');
+          const allKeyNames = new Set([
+            ...apiKeysResponse.data.global.map(k => k.name),
+            ...apiKeysResponse.data.project.map(k => k.name),
+          ]);
+
+          for (const issue of issuesWithTakenBy) {
+            if (!allKeyNames.has(issue.takenBy!)) {
+              findings.push({
+                type: 'orphaned_taken',
+                severity: 'warning',
+                entityType: 'Issue',
+                entityId: issue.id,
+                entityTitle: issue.title,
+                takenBy: issue.takenBy,
+                lastActivity: issue.updatedAt,
+                recommendation: 'API key deleted or renamed. Consider clearing takenBy if in-progress.',
+                ...(verbosity === 'detailed' && { details: issue }),
+              });
+            }
+          }
+        } catch {
+          // Admin endpoint may require admin-level API key — skip silently
+        }
+      }
+    }
+
+    // Check 4: multiple_stuck
+    if (checksToRun.includes('multiple_stuck')) {
+      const agentCounts = new Map<string, Issue[]>();
+      for (const issue of allIssues) {
+        if (issue.status === 'in-progress' && issue.takenBy) {
+          if (!agentCounts.has(issue.takenBy)) {
+            agentCounts.set(issue.takenBy, []);
+          }
+          agentCounts.get(issue.takenBy)!.push(issue);
+        }
+      }
+      for (const [agent, issues] of agentCounts.entries()) {
+        if (issues.length >= 3) {
+          findings.push({
+            type: 'multiple_stuck',
+            severity: 'warning',
+            entityType: 'Issue',
+            entityId: issues[0].id,
+            entityTitle: `${agent} has ${issues.length} in-progress issues`,
+            takenBy: agent,
+            recommendation: 'Agent may be crashed or overloaded. Investigate.',
+            ...(verbosity === 'detailed' && {
+              details: issues.map(i => ({ id: i.id, title: i.title, updatedAt: i.updatedAt })),
+            }),
+          });
+        }
+      }
+    }
+
+    // Check 5: long_review
+    if (checksToRun.includes('long_review')) {
+      for (const issue of allIssues) {
+        if (issue.status === 'review') {
+          const hours = hoursSince(issue.updatedAt);
+          if (hours > staleThresholdHours) {
+            findings.push({
+              type: 'long_review',
+              severity: 'info',
+              entityType: 'Issue',
+              entityId: issue.id,
+              entityTitle: issue.title,
+              takenBy: issue.takenBy,
+              lastActivity: issue.updatedAt,
+              staleDuration: formatDuration(hours),
+              recommendation: 'Entity waiting for review. Notify architect or assignee.',
+              ...(verbosity === 'detailed' && { details: issue }),
+            });
+          }
+        }
+      }
+    }
+
+    // Check 6: blocked_without_note
+    if (checksToRun.includes('blocked_without_note')) {
+      for (const issue of allIssues) {
+        if (issue.status === 'blocked' && (!issue.notes || issue.notes.trim() === '')) {
+          findings.push({
+            type: 'blocked_without_note',
+            severity: 'warning',
+            entityType: 'Issue',
+            entityId: issue.id,
+            entityTitle: issue.title,
+            takenBy: issue.takenBy,
+            lastActivity: issue.updatedAt,
+            recommendation: 'Add explanation to notes field.',
+            ...(verbosity === 'detailed' && { details: issue }),
+          });
+        }
+      }
+      for (const mod of allModules) {
+        if (mod.status === 'blocked' && (!mod.notes || mod.notes.trim() === '')) {
+          findings.push({
+            type: 'blocked_without_note',
+            severity: 'warning',
+            entityType: 'Module',
+            entityId: mod.id,
+            entityTitle: mod.title,
+            lastActivity: mod.updatedAt,
+            recommendation: 'Add explanation to notes field.',
+            ...(verbosity === 'detailed' && { details: mod }),
+          });
+        }
+      }
+      for (const feat of allFeatures) {
+        if (feat.status === 'blocked' && (!feat.notes || feat.notes.trim() === '')) {
+          findings.push({
+            type: 'blocked_without_note',
+            severity: 'warning',
+            entityType: 'Feature',
+            entityId: feat.id,
+            entityTitle: feat.title,
+            lastActivity: feat.updatedAt,
+            recommendation: 'Add explanation to notes field.',
+            ...(verbosity === 'detailed' && { details: feat }),
+          });
+        }
+      }
+    }
+
+    // Build summary
+    const byType: Record<string, number> = {};
+    for (const f of findings) {
+      byType[f.type] = (byType[f.type] || 0) + 1;
+    }
+
+    const result: {
+      summary: { totalChecked: number; issuesFound: number; byType: Record<string, number> };
+      findings?: typeof findings;
+    } = {
+      summary: { totalChecked, issuesFound: findings.length, byType },
+    };
+
+    if (verbosity !== 'summary') {
+      result.findings = findings;
+    }
+
+    return result;
+  }
+
+  // Discussions — project-scoped: /api/projects/{slug}/discussions
+  async createDiscussion(projectSlug: string, data: CreateDiscussionRequest): Promise<Discussion> {
+    try {
+      const response = await this.axios.post<Discussion>(
+        `/api/projects/${projectSlug}/discussions`,
+        data
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async listDiscussions(
+    projectSlug: string,
+    filters?: {
+      entityType?: 'Module' | 'Feature' | 'Issue';
+      entityId?: string;
+      channelId?: string;
+      status?: string;
+    }
+  ): Promise<Discussion[]> {
+    try {
+      const params = new URLSearchParams();
+      if (filters?.entityType) params.set('entityType', filters.entityType);
+      if (filters?.entityId) params.set('entityId', filters.entityId);
+      if (filters?.channelId) params.set('channelId', filters.channelId);
+      if (filters?.status) params.set('status', filters.status);
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const response = await this.axios.get<Discussion[]>(
+        `/api/projects/${projectSlug}/discussions${query}`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async postMessage(
+    projectSlug: string,
+    discussionId: string,
+    data: CreateDiscussionMessageRequest
+  ): Promise<DiscussionMessage> {
+    try {
+      const response = await this.axios.post<DiscussionMessage>(
+        `/api/projects/${projectSlug}/discussions/${discussionId}/messages`,
+        data
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // Direct Messages — project-scoped: /api/projects/{slug}/dm/{userId}
+  async sendDM(
+    projectSlug: string,
+    recipientUserId: string,
+    data: CreateDirectMessageRequest
+  ): Promise<DirectMessage> {
+    try {
+      const response = await this.axios.post<DirectMessage>(
+        `/api/projects/${projectSlug}/dm/${recipientUserId}`,
+        data
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // Team Management — project-scoped: /api/projects/{slug}/team, /members
+  async listMembers(projectSlug: string): Promise<ProjectMember[]> {
+    try {
+      const response = await this.axios.get<ProjectMember[]>(
+        `/api/projects/${projectSlug}/team`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async addMember(
+    projectSlug: string,
+    userId: string,
+    role?: ProjectMemberRole
+  ): Promise<ProjectMember> {
+    try {
+      const data: { userId: string; role?: string } = { userId };
+      if (role) data.role = role;
+      const response = await this.axios.post<ProjectMember>(
+        `/api/projects/${projectSlug}/members`,
+        data
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async updateMemberRole(
+    projectSlug: string,
+    userId: string,
+    role: ProjectMemberRole
+  ): Promise<ProjectMember> {
+    try {
+      const response = await this.axios.put<ProjectMember>(
+        `/api/projects/${projectSlug}/members/${userId}`,
+        { role }
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // Activity & Audit — project-scoped + admin
+  async getEntityActivity(
+    projectSlug: string,
+    entityType: string,
+    entityId: string
+  ): Promise<unknown[]> {
+    try {
+      const response = await this.axios.get<unknown[]>(
+        `/api/projects/${projectSlug}/activity/${entityType}/${entityId}`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getAuditLog(filters?: {
+    page?: number;
+    limit?: number;
+    action?: string;
+    entityType?: string;
+  }): Promise<{ data: unknown[]; total: number; page: number; limit: number }> {
+    try {
+      const params: Record<string, unknown> = {};
+      if (filters?.page) params.page = filters.page;
+      if (filters?.limit) params.limit = filters.limit;
+      if (filters?.action) params.action = filters.action;
+      if (filters?.entityType) params.entityType = filters.entityType;
+      const response = await this.axios.get<{ data: unknown[]; total: number; page: number; limit: number }>(
+        '/api/admin/audit',
+        { params }
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // Discussion CRUD operations (7 new methods)
+
+  async getDiscussion(projectSlug: string, discussionId: string): Promise<Discussion> {
+    try {
+      const response = await this.axios.get<Discussion>(
+        `/api/projects/${projectSlug}/discussions/${discussionId}`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getDiscussionMessages(
+    projectSlug: string,
+    discussionId: string,
+    page = 1,
+    limit = 50
+  ): Promise<{ data: DiscussionMessage[]; total: number; page: number; limit: number }> {
+    try {
+      const response = await this.axios.get<{ data: DiscussionMessage[]; total: number; page: number; limit: number }>(
+        `/api/projects/${projectSlug}/discussions/${discussionId}/messages?page=${page}&limit=${limit}`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async listDMConversations(projectSlug: string): Promise<unknown[]> {
+    try {
+      const response = await this.axios.get<unknown[]>(
+        `/api/projects/${projectSlug}/dm/conversations`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getDMHistory(
+    projectSlug: string,
+    userId: string,
+    page = 1,
+    limit = 50
+  ): Promise<{ data: DirectMessage[]; total: number; page: number; limit: number }> {
+    try {
+      const response = await this.axios.get<{ data: DirectMessage[]; total: number; page: number; limit: number }>(
+        `/api/projects/${projectSlug}/dm/${userId}?page=${page}&limit=${limit}`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async updateDiscussion(
+    projectSlug: string,
+    discussionId: string,
+    data: UpdateDiscussionRequest
+  ): Promise<Discussion> {
+    try {
+      const response = await this.axios.put<Discussion>(
+        `/api/projects/${projectSlug}/discussions/${discussionId}`,
+        data
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async markDMRead(projectSlug: string, userId: string): Promise<{ count: number }> {
+    try {
+      const response = await this.axios.post<{ count: number }>(
+        `/api/projects/${projectSlug}/dm/${userId}/read`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async editMessage(
+    projectSlug: string,
+    discussionId: string,
+    messageId: string,
+    data: { content: string; contentType?: string }
+  ): Promise<DiscussionMessage> {
+    try {
+      const response = await this.axios.put<DiscussionMessage>(
+        `/api/projects/${projectSlug}/discussions/${discussionId}/messages/${messageId}`,
+        data
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async deleteMessage(
+    projectSlug: string,
+    discussionId: string,
+    messageId: string
+  ): Promise<{ message: string }> {
+    try {
+      const response = await this.axios.delete<{ message: string }>(
+        `/api/projects/${projectSlug}/discussions/${discussionId}/messages/${messageId}`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async deleteDiscussion(projectSlug: string, discussionId: string): Promise<{ message: string }> {
+    try {
+      const response = await this.axios.delete<{ message: string }>(
+        `/api/projects/${projectSlug}/discussions/${discussionId}`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // Agent Memory — project-scoped: /api/projects/{slug}/memory/{entityType}/{entityId}
+
+  async readMemory(
+    projectSlug: string,
+    entityType: MemoryEntityType,
+    entityId: string,
+    full = false,
+  ): Promise<AgentMemory> {
+    try {
+      const query = full ? '?full=true' : '';
+      const response = await this.axios.get<AgentMemory>(
+        `/api/projects/${projectSlug}/memory/${entityType}/${entityId}${query}`
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async appendMemoryLog(
+    projectSlug: string,
+    entityType: MemoryEntityType,
+    entityId: string,
+    tag: MemoryTag,
+    content: string,
+  ): Promise<MemoryLogEntry> {
+    try {
+      const response = await this.axios.post<MemoryLogEntry>(
+        `/api/projects/${projectSlug}/memory/${entityType}/${entityId}`,
+        { tag, content },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async consolidateMemory(
+    projectSlug: string,
+    entityType: MemoryEntityType,
+    entityId: string,
+    newBaseText: string,
+    integrateUpTo?: string,
+  ): Promise<{ success: boolean; consolidatedBy: string }> {
+    try {
+      const body: Record<string, unknown> = { newBaseText };
+      if (integrateUpTo) body.integrateUpTo = integrateUpTo;
+      const response = await this.axios.put<{ success: boolean; consolidatedBy: string }>(
+        `/api/projects/${projectSlug}/memory/${entityType}/${entityId}/consolidate`,
+        body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+}
