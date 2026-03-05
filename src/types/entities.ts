@@ -15,6 +15,7 @@ export interface Project {
   targetDate: string | null;
   completedDate: string | null;
   ownerId: string;
+  claimSettings: Record<string, unknown> | null;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -32,6 +33,9 @@ export interface Module {
   targetDate: string | null;
   completedDate: string | null;
   ownerId: string;
+  takenBy: string | null;
+  takenByUserId: string | null;
+  takenAt: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -50,6 +54,9 @@ export interface Feature {
   targetDate: string | null;
   completedDate: string | null;
   ownerId: string;
+  takenBy: string | null;
+  takenByUserId: string | null;
+  takenAt: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -69,6 +76,8 @@ export interface Issue {
   completedDate: string | null;
   assignedTo: string | null;
   takenBy: string | null;
+  takenByUserId: string | null;
+  takenAt: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;

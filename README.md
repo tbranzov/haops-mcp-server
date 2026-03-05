@@ -19,7 +19,6 @@ Model Context Protocol (MCP) server for **HAOps (Human-Agent Operations)** - ena
 ### Installation
 
 ```bash
-git clone https://github.com/tbranzov/haops-mcp-server.git
 cd haops-mcp-server
 npm install
 ```
@@ -55,7 +54,7 @@ Register the MCP server via the Claude CLI:
 claude mcp add-json --scope user haops '{
   "type": "stdio",
   "command": "node",
-  "args": ["/path/to/haops-mcp-server/dist/index.js"],
+  "args": ["/path/to/feature-tracker/haops-mcp-server/dist/index.js"],
   "env": {
     "HAOPS_API_URL": "http://localhost:3000",
     "HAOPS_API_KEY": "your-api-key-here"
@@ -76,7 +75,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
   "mcpServers": {
     "haops": {
       "command": "node",
-      "args": ["/path/to/haops-mcp-server/dist/index.js"],
+      "args": ["/path/to/feature-tracker/haops-mcp-server/dist/index.js"],
       "env": {
         "HAOPS_API_URL": "http://localhost:3000",
         "HAOPS_API_KEY": "your-api-key-here"

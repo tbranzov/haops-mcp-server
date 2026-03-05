@@ -473,6 +473,212 @@ export class HAOpsApiClient {
     }
   }
 
+  async claimFeature(
+    featureId: string,
+    options?: { checkOnly?: boolean }
+  ): Promise<{
+    success: boolean;
+    message: string;
+    canResume?: boolean;
+    canClaim?: boolean;
+    claimedBy?: string;
+    lastActivity?: string;
+    feature: Feature;
+  }> {
+    try {
+      const feature = await this.getFeature(featureId);
+
+      if (feature.status === 'done' || feature.status === 'cancelled') {
+        return {
+          success: false,
+          message: `Cannot claim feature with status: ${feature.status}`,
+          feature,
+        };
+      }
+
+      const currentClaimer = feature.takenBy || feature.takenByUserId;
+      if (currentClaimer) {
+        if (options?.checkOnly) {
+          return {
+            success: false,
+            message: `Already claimed by "${feature.takenBy || 'a user'}"`,
+            canClaim: false,
+            claimedBy: feature.takenBy || feature.takenByUserId || 'unknown',
+            lastActivity: feature.takenAt || feature.updatedAt || '',
+            feature,
+          };
+        }
+
+        try {
+          const response = await this.axios.post<Feature>(
+            `/api/features/${featureId}/claim`
+          );
+          return {
+            success: true,
+            message: 'Feature claimed successfully',
+            feature: response.data,
+          };
+        } catch (error) {
+          if (axios.isAxiosError(error) && error.response?.status === 409) {
+            return {
+              success: false,
+              message: `Already claimed by "${feature.takenBy || 'another user'}"`,
+              claimedBy: feature.takenBy || feature.takenByUserId || 'unknown',
+              lastActivity: feature.takenAt || feature.updatedAt || '',
+              feature,
+            };
+          }
+          throw error;
+        }
+      }
+
+      if (options?.checkOnly) {
+        return {
+          success: true,
+          message: 'Feature is available to claim',
+          canClaim: true,
+          feature,
+        };
+      }
+
+      try {
+        const response = await this.axios.post<Feature>(
+          `/api/features/${featureId}/claim`
+        );
+        return {
+          success: true,
+          message: 'Feature claimed successfully',
+          feature: response.data,
+        };
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 409) {
+          try {
+            const freshFeature = await this.getFeature(featureId);
+            return {
+              success: false,
+              message: 'Race condition: feature was claimed by another agent',
+              claimedBy: freshFeature.takenBy || freshFeature.takenByUserId || 'unknown',
+              feature: freshFeature,
+            };
+          } catch {
+            return {
+              success: false,
+              message: 'Race condition: feature was claimed by another agent',
+              claimedBy: 'unknown',
+              feature,
+            };
+          }
+        }
+        throw error;
+      }
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async claimModule(
+    moduleId: string,
+    options?: { checkOnly?: boolean }
+  ): Promise<{
+    success: boolean;
+    message: string;
+    canResume?: boolean;
+    canClaim?: boolean;
+    claimedBy?: string;
+    lastActivity?: string;
+    module: Module;
+  }> {
+    try {
+      const mod = await this.getModule(moduleId);
+
+      if (mod.status === 'done' || mod.status === 'cancelled') {
+        return {
+          success: false,
+          message: `Cannot claim module with status: ${mod.status}`,
+          module: mod,
+        };
+      }
+
+      const currentClaimer = mod.takenBy || mod.takenByUserId;
+      if (currentClaimer) {
+        if (options?.checkOnly) {
+          return {
+            success: false,
+            message: `Already claimed by "${mod.takenBy || 'a user'}"`,
+            canClaim: false,
+            claimedBy: mod.takenBy || mod.takenByUserId || 'unknown',
+            lastActivity: mod.takenAt || mod.updatedAt || '',
+            module: mod,
+          };
+        }
+
+        try {
+          const response = await this.axios.post<Module>(
+            `/api/modules/${moduleId}/claim`
+          );
+          return {
+            success: true,
+            message: 'Module claimed successfully',
+            module: response.data,
+          };
+        } catch (error) {
+          if (axios.isAxiosError(error) && error.response?.status === 409) {
+            return {
+              success: false,
+              message: `Already claimed by "${mod.takenBy || 'another user'}"`,
+              claimedBy: mod.takenBy || mod.takenByUserId || 'unknown',
+              lastActivity: mod.takenAt || mod.updatedAt || '',
+              module: mod,
+            };
+          }
+          throw error;
+        }
+      }
+
+      if (options?.checkOnly) {
+        return {
+          success: true,
+          message: 'Module is available to claim',
+          canClaim: true,
+          module: mod,
+        };
+      }
+
+      try {
+        const response = await this.axios.post<Module>(
+          `/api/modules/${moduleId}/claim`
+        );
+        return {
+          success: true,
+          message: 'Module claimed successfully',
+          module: response.data,
+        };
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 409) {
+          try {
+            const freshModule = await this.getModule(moduleId);
+            return {
+              success: false,
+              message: 'Race condition: module was claimed by another agent',
+              claimedBy: freshModule.takenBy || freshModule.takenByUserId || 'unknown',
+              module: freshModule,
+            };
+          } catch {
+            return {
+              success: false,
+              message: 'Race condition: module was claimed by another agent',
+              claimedBy: 'unknown',
+              module: mod,
+            };
+          }
+        }
+        throw error;
+      }
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   async bulkUpdateIssues(
     issueIds: string[],
     updates: { status?: string; priority?: string; assignedTo?: string }
@@ -504,6 +710,8 @@ export class HAOpsApiClient {
       entityId: string;
       entityTitle: string;
       takenBy?: string | null;
+      takenByUserId?: string | null;
+      takenAt?: string | null;
       lastActivity?: string;
       staleDuration?: string;
       recommendation: string;
@@ -534,6 +742,8 @@ export class HAOpsApiClient {
       entityId: string;
       entityTitle: string;
       takenBy?: string | null;
+      takenByUserId?: string | null;
+      takenAt?: string | null;
       lastActivity?: string;
       staleDuration?: string;
       recommendation: string;
@@ -589,11 +799,12 @@ export class HAOpsApiClient {
       return `${Math.round(hours / 24)} days`;
     };
 
-    // Check 1: stale_in_progress
+    // Check 1: stale_in_progress — use takenAt when available, fall back to updatedAt
     if (checksToRun.includes('stale_in_progress')) {
       for (const issue of allIssues) {
         if (issue.status === 'in-progress') {
-          const hours = hoursSince(issue.updatedAt);
+          const activityDate = issue.takenAt || issue.updatedAt;
+          const hours = hoursSince(activityDate);
           if (hours > staleThresholdHours) {
             findings.push({
               type: 'stale_in_progress',
@@ -602,9 +813,11 @@ export class HAOpsApiClient {
               entityId: issue.id,
               entityTitle: issue.title,
               takenBy: issue.takenBy,
-              lastActivity: issue.updatedAt,
+              takenByUserId: issue.takenByUserId,
+              takenAt: issue.takenAt,
+              lastActivity: activityDate,
               staleDuration: formatDuration(hours),
-              recommendation: 'Check if agent crashed. Consider releasing claim.',
+              recommendation: 'Check if agent/user is still working. Consider releasing claim.',
               ...(verbosity === 'detailed' && { details: issue }),
             });
           }
@@ -612,7 +825,8 @@ export class HAOpsApiClient {
       }
       for (const mod of allModules) {
         if (mod.status === 'in-progress') {
-          const hours = hoursSince(mod.updatedAt);
+          const activityDate = mod.takenAt || mod.updatedAt;
+          const hours = hoursSince(activityDate);
           if (hours > staleThresholdHours) {
             findings.push({
               type: 'stale_in_progress',
@@ -620,9 +834,12 @@ export class HAOpsApiClient {
               entityType: 'Module',
               entityId: mod.id,
               entityTitle: mod.title,
-              lastActivity: mod.updatedAt,
+              takenBy: mod.takenBy,
+              takenByUserId: mod.takenByUserId,
+              takenAt: mod.takenAt,
+              lastActivity: activityDate,
               staleDuration: formatDuration(hours),
-              recommendation: 'Check if agent crashed. Consider releasing claim.',
+              recommendation: 'Check if agent/user is still working. Consider releasing claim.',
               ...(verbosity === 'detailed' && { details: mod }),
             });
           }
@@ -630,7 +847,8 @@ export class HAOpsApiClient {
       }
       for (const feat of allFeatures) {
         if (feat.status === 'in-progress') {
-          const hours = hoursSince(feat.updatedAt);
+          const activityDate = feat.takenAt || feat.updatedAt;
+          const hours = hoursSince(activityDate);
           if (hours > staleThresholdHours) {
             findings.push({
               type: 'stale_in_progress',
@@ -638,9 +856,12 @@ export class HAOpsApiClient {
               entityType: 'Feature',
               entityId: feat.id,
               entityTitle: feat.title,
-              lastActivity: feat.updatedAt,
+              takenBy: feat.takenBy,
+              takenByUserId: feat.takenByUserId,
+              takenAt: feat.takenAt,
+              lastActivity: activityDate,
               staleDuration: formatDuration(hours),
-              recommendation: 'Check if agent crashed. Consider releasing claim.',
+              recommendation: 'Check if agent/user is still working. Consider releasing claim.',
               ...(verbosity === 'detailed' && { details: feat }),
             });
           }
@@ -648,31 +869,42 @@ export class HAOpsApiClient {
       }
     }
 
-    // Check 2: inconsistent_taken (issues only - takenBy is on issues)
+    // Check 2: inconsistent_taken — claimed but status is backlog/cancelled (all entity types)
     if (checksToRun.includes('inconsistent_taken')) {
-      for (const issue of allIssues) {
-        if (issue.takenBy && (issue.status === 'backlog' || issue.status === 'cancelled')) {
-          findings.push({
-            type: 'inconsistent_taken',
-            severity: 'error',
-            entityType: 'Issue',
-            entityId: issue.id,
-            entityTitle: issue.title,
-            takenBy: issue.takenBy,
-            lastActivity: issue.updatedAt,
-            recommendation: 'Data inconsistency. Clear takenBy for backlog/cancelled.',
-            ...(verbosity === 'detailed' && { details: issue }),
-          });
+      const checkInconsistent = (entities: Array<{ id: string; title: string; status: string; takenBy: string | null; takenByUserId: string | null; takenAt: string | null; updatedAt: string }>, typeName: string) => {
+        for (const entity of entities) {
+          const isClaimed = entity.takenBy || entity.takenByUserId;
+          if (isClaimed && (entity.status === 'backlog' || entity.status === 'cancelled')) {
+            findings.push({
+              type: 'inconsistent_taken',
+              severity: 'error',
+              entityType: typeName,
+              entityId: entity.id,
+              entityTitle: entity.title,
+              takenBy: entity.takenBy,
+              takenByUserId: entity.takenByUserId,
+              takenAt: entity.takenAt,
+              lastActivity: entity.updatedAt,
+              recommendation: `Data inconsistency. Clear claim for ${entity.status} ${typeName.toLowerCase()}.`,
+              ...(verbosity === 'detailed' && { details: entity }),
+            });
+          }
         }
-      }
+      };
+      checkInconsistent(allIssues, 'Issue');
+      checkInconsistent(allFeatures, 'Feature');
+      checkInconsistent(allModules, 'Module');
     }
 
-    // Check 3: orphaned_taken - compare takenBy values against real API key names
+    // Check 3: orphaned_taken — compare takenBy values against real API key names (all entity types)
     if (checksToRun.includes('orphaned_taken')) {
-      const issuesWithTakenBy = allIssues.filter(i => i.takenBy);
-      if (issuesWithTakenBy.length > 0) {
+      const entitiesWithTakenBy: Array<{ id: string; title: string; takenBy: string | null; takenByUserId: string | null; takenAt: string | null; updatedAt: string; _type: string }> = [
+        ...allIssues.filter(i => i.takenBy).map(i => ({ ...i, _type: 'Issue' })),
+        ...allFeatures.filter(f => f.takenBy).map(f => ({ ...f, _type: 'Feature' })),
+        ...allModules.filter(m => m.takenBy).map(m => ({ ...m, _type: 'Module' })),
+      ];
+      if (entitiesWithTakenBy.length > 0) {
         try {
-          // Fetch all API keys from admin endpoint
           const apiKeysResponse = await this.axios.get<{
             global: Array<{ name: string }>;
             project: Array<{ name: string }>;
@@ -682,18 +914,20 @@ export class HAOpsApiClient {
             ...apiKeysResponse.data.project.map(k => k.name),
           ]);
 
-          for (const issue of issuesWithTakenBy) {
-            if (!allKeyNames.has(issue.takenBy!)) {
+          for (const entity of entitiesWithTakenBy) {
+            if (!allKeyNames.has(entity.takenBy!)) {
               findings.push({
                 type: 'orphaned_taken',
                 severity: 'warning',
-                entityType: 'Issue',
-                entityId: issue.id,
-                entityTitle: issue.title,
-                takenBy: issue.takenBy,
-                lastActivity: issue.updatedAt,
-                recommendation: 'API key deleted or renamed. Consider clearing takenBy if in-progress.',
-                ...(verbosity === 'detailed' && { details: issue }),
+                entityType: entity._type,
+                entityId: entity.id,
+                entityTitle: entity.title,
+                takenBy: entity.takenBy,
+                takenByUserId: entity.takenByUserId,
+                takenAt: entity.takenAt,
+                lastActivity: entity.updatedAt,
+                recommendation: 'API key deleted or renamed. Consider clearing claim.',
+                ...(verbosity === 'detailed' && { details: entity }),
               });
             }
           }
@@ -703,29 +937,52 @@ export class HAOpsApiClient {
       }
     }
 
-    // Check 4: multiple_stuck
+    // Check 4: multiple_stuck — group by agent (takenBy) and human (takenByUserId) across all entity types
     if (checksToRun.includes('multiple_stuck')) {
-      const agentCounts = new Map<string, Issue[]>();
+      type ClaimEntry = { id: string; title: string; entityType: string; updatedAt: string };
+      const claimerCounts = new Map<string, ClaimEntry[]>();
+
+      const addClaim = (claimerKey: string, entry: ClaimEntry) => {
+        if (!claimerCounts.has(claimerKey)) claimerCounts.set(claimerKey, []);
+        claimerCounts.get(claimerKey)!.push(entry);
+      };
+
       for (const issue of allIssues) {
-        if (issue.status === 'in-progress' && issue.takenBy) {
-          if (!agentCounts.has(issue.takenBy)) {
-            agentCounts.set(issue.takenBy, []);
-          }
-          agentCounts.get(issue.takenBy)!.push(issue);
+        if (issue.status === 'in-progress') {
+          if (issue.takenBy) addClaim(`agent:${issue.takenBy}`, { id: issue.id, title: issue.title, entityType: 'Issue', updatedAt: issue.updatedAt });
+          if (issue.takenByUserId) addClaim(`user:${issue.takenByUserId}`, { id: issue.id, title: issue.title, entityType: 'Issue', updatedAt: issue.updatedAt });
         }
       }
-      for (const [agent, issues] of agentCounts.entries()) {
-        if (issues.length >= 3) {
+      for (const feat of allFeatures) {
+        if (feat.status === 'in-progress') {
+          if (feat.takenBy) addClaim(`agent:${feat.takenBy}`, { id: feat.id, title: feat.title, entityType: 'Feature', updatedAt: feat.updatedAt });
+          if (feat.takenByUserId) addClaim(`user:${feat.takenByUserId}`, { id: feat.id, title: feat.title, entityType: 'Feature', updatedAt: feat.updatedAt });
+        }
+      }
+      for (const mod of allModules) {
+        if (mod.status === 'in-progress') {
+          if (mod.takenBy) addClaim(`agent:${mod.takenBy}`, { id: mod.id, title: mod.title, entityType: 'Module', updatedAt: mod.updatedAt });
+          if (mod.takenByUserId) addClaim(`user:${mod.takenByUserId}`, { id: mod.id, title: mod.title, entityType: 'Module', updatedAt: mod.updatedAt });
+        }
+      }
+
+      for (const [claimerKey, entries] of claimerCounts.entries()) {
+        if (entries.length >= 3) {
+          const [type, name] = claimerKey.split(':');
+          const label = type === 'agent' ? name : `user ${name}`;
           findings.push({
             type: 'multiple_stuck',
             severity: 'warning',
-            entityType: 'Issue',
-            entityId: issues[0].id,
-            entityTitle: `${agent} has ${issues.length} in-progress issues`,
-            takenBy: agent,
-            recommendation: 'Agent may be crashed or overloaded. Investigate.',
+            entityType: 'Mixed',
+            entityId: entries[0].id,
+            entityTitle: `${label} has ${entries.length} in-progress work items`,
+            takenBy: type === 'agent' ? name : null,
+            takenByUserId: type === 'user' ? name : null,
+            recommendation: type === 'agent'
+              ? 'Agent may be crashed or overloaded. Investigate.'
+              : 'User has many concurrent claims. Verify workload.',
             ...(verbosity === 'detailed' && {
-              details: issues.map(i => ({ id: i.id, title: i.title, updatedAt: i.updatedAt })),
+              details: entries.map(e => ({ id: e.id, title: e.title, entityType: e.entityType, updatedAt: e.updatedAt })),
             }),
           });
         }
@@ -745,6 +1002,8 @@ export class HAOpsApiClient {
               entityId: issue.id,
               entityTitle: issue.title,
               takenBy: issue.takenBy,
+              takenByUserId: issue.takenByUserId,
+              takenAt: issue.takenAt,
               lastActivity: issue.updatedAt,
               staleDuration: formatDuration(hours),
               recommendation: 'Entity waiting for review. Notify architect or assignee.',
@@ -766,6 +1025,8 @@ export class HAOpsApiClient {
             entityId: issue.id,
             entityTitle: issue.title,
             takenBy: issue.takenBy,
+            takenByUserId: issue.takenByUserId,
+            takenAt: issue.takenAt,
             lastActivity: issue.updatedAt,
             recommendation: 'Add explanation to notes field.',
             ...(verbosity === 'detailed' && { details: issue }),
@@ -780,6 +1041,9 @@ export class HAOpsApiClient {
             entityType: 'Module',
             entityId: mod.id,
             entityTitle: mod.title,
+            takenBy: mod.takenBy,
+            takenByUserId: mod.takenByUserId,
+            takenAt: mod.takenAt,
             lastActivity: mod.updatedAt,
             recommendation: 'Add explanation to notes field.',
             ...(verbosity === 'detailed' && { details: mod }),
@@ -794,6 +1058,9 @@ export class HAOpsApiClient {
             entityType: 'Feature',
             entityId: feat.id,
             entityTitle: feat.title,
+            takenBy: feat.takenBy,
+            takenByUserId: feat.takenByUserId,
+            takenAt: feat.takenAt,
             lastActivity: feat.updatedAt,
             recommendation: 'Add explanation to notes field.',
             ...(verbosity === 'detailed' && { details: feat }),
@@ -1153,6 +1420,58 @@ export class HAOpsApiClient {
       const response = await this.axios.put<{ success: boolean; consolidatedBy: string }>(
         `/api/projects/${projectSlug}/memory/${entityType}/${entityId}/consolidate`,
         body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // ===== Protocol Methods =====
+
+  async readProtocol(
+    projectSlug: string,
+    role: string,
+    version?: number,
+  ): Promise<Record<string, unknown>> {
+    try {
+      let query = `?role=${encodeURIComponent(role)}`;
+      if (version !== undefined) query += `&version=${version}`;
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/protocol${query}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async updateProtocol(
+    projectSlug: string,
+    role: string,
+    content: string,
+    changeSummary?: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const body: Record<string, unknown> = { role, content };
+      if (changeSummary) body.changeSummary = changeSummary;
+      const response = await this.axios.put<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/protocol`,
+        body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async listProtocolVersions(
+    projectSlug: string,
+    role: string,
+  ): Promise<{ versions: Array<Record<string, unknown>> }> {
+    try {
+      const response = await this.axios.get<{ versions: Array<Record<string, unknown>> }>(
+        `/api/projects/${projectSlug}/protocol/history?role=${encodeURIComponent(role)}`,
       );
       return response.data;
     } catch (error) {

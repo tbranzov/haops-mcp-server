@@ -1083,6 +1083,42 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'haops_claim_feature',
+        description: 'Claim a feature for work. Checks availability and marks as in-progress. Use before starting implementation on a feature.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            featureId: {
+              type: 'string',
+              description: 'UUID of the feature to claim',
+            },
+            checkOnly: {
+              type: 'boolean',
+              description: 'Only check if claimable, do not actually claim (default: false)',
+            },
+          },
+          required: ['featureId'],
+        },
+      },
+      {
+        name: 'haops_claim_module',
+        description: 'Claim a module for work. Checks availability and marks as in-progress. Use before starting implementation on a module.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            moduleId: {
+              type: 'string',
+              description: 'UUID of the module to claim',
+            },
+            checkOnly: {
+              type: 'boolean',
+              description: 'Only check if claimable, do not actually claim (default: false)',
+            },
+          },
+          required: ['moduleId'],
+        },
+      },
+      {
         name: 'haops_work_entity_health_check',
         description: 'Run health checks on work entities to detect stale, inconsistent, or problematic states. Returns findings with severity and recommendations.',
         inputSchema: {
@@ -1599,6 +1635,73 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
           },
           required: ['projectSlug', 'entityType', 'entityId', 'newBaseText'],
+        },
+      },
+      // ===== Protocol Tools =====
+      {
+        name: 'haops_read_protocol',
+        description: 'Read the work protocol for a specific agent role in a project. Returns the current version by default, or a specific historical version. Protocols define HOW agents should work (scope, workflow, handoff, etc.).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'The project slug (URL identifier)',
+            },
+            role: {
+              type: 'string',
+              description: 'Agent role to read protocol for (e.g., architect, dev, qa, devops)',
+            },
+            version: {
+              type: 'number',
+              description: 'Specific version number to read. If omitted, returns the current version.',
+            },
+          },
+          required: ['projectSlug', 'role'],
+        },
+      },
+      {
+        name: 'haops_update_protocol',
+        description: 'Update (create new version of) the work protocol for a specific agent role in a project. Creates a new version and marks the previous as historical. Architect and admin roles ONLY.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'The project slug (URL identifier)',
+            },
+            role: {
+              type: 'string',
+              description: 'Agent role to update protocol for (e.g., architect, dev, qa, devops)',
+            },
+            content: {
+              type: 'string',
+              description: 'The full protocol document in markdown',
+            },
+            changeSummary: {
+              type: 'string',
+              description: 'Optional summary of what changed in this version',
+            },
+          },
+          required: ['projectSlug', 'role', 'content'],
+        },
+      },
+      {
+        name: 'haops_list_protocol_versions',
+        description: 'List all versions of a work protocol for a specific agent role. Returns version numbers, timestamps, change summaries, and who updated each version.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'The project slug (URL identifier)',
+            },
+            role: {
+              type: 'string',
+              description: 'Agent role to list protocol versions for (e.g., architect, dev, qa, devops)',
+            },
+          },
+          required: ['projectSlug', 'role'],
         },
       },
     ],
@@ -2668,6 +2771,62 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  if (name === 'haops_claim_feature') {
+    try {
+      const { featureId, checkOnly } = args as {
+        featureId: string;
+        checkOnly?: boolean;
+      };
+
+      const result = await apiClient.claimFeature(featureId, {
+        checkOnly: checkOnly || false,
+      });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error claiming feature: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_claim_module') {
+    try {
+      const { moduleId, checkOnly } = args as {
+        moduleId: string;
+        checkOnly?: boolean;
+      };
+
+      const result = await apiClient.claimModule(moduleId, {
+        checkOnly: checkOnly || false,
+      });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error claiming module: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
   if (name === 'haops_work_entity_health_check') {
     try {
       const {
@@ -3134,6 +3293,105 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error consolidating memory: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // ===== Protocol Tool Handlers =====
+
+  if (name === 'haops_read_protocol') {
+    try {
+      const { projectSlug, role, version } = args as {
+        projectSlug: string;
+        role: string;
+        version?: number;
+      };
+
+      const result = await apiClient.readProtocol(projectSlug, role, version);
+
+      // Format for readability — show content as markdown, not JSON
+      const lines = [
+        `Protocol for role "${role}" in project "${projectSlug}":`,
+        `Version: ${result.version || 'N/A'}`,
+        `Updated: ${result.createdAt || 'N/A'}`,
+        result.updatedByKey ? `Updated by: ${result.updatedByKey}` : '',
+        result.changeSummary ? `Change summary: ${result.changeSummary}` : '',
+        '',
+        '---',
+        '',
+        (result.content as string) || '(empty)',
+      ].filter(Boolean);
+
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error reading protocol: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_update_protocol') {
+    try {
+      const { projectSlug, role, content, changeSummary } = args as {
+        projectSlug: string;
+        role: string;
+        content: string;
+        changeSummary?: string;
+      };
+
+      const result = await apiClient.updateProtocol(projectSlug, role, content, changeSummary);
+
+      return {
+        content: [{ type: 'text', text: `Protocol updated successfully.\nRole: ${role}\nVersion: ${result.version}\nID: ${result.id}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error updating protocol: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_list_protocol_versions') {
+    try {
+      const { projectSlug, role } = args as {
+        projectSlug: string;
+        role: string;
+      };
+
+      const result = await apiClient.listProtocolVersions(projectSlug, role);
+
+      if (!result.versions || result.versions.length === 0) {
+        return {
+          content: [{ type: 'text', text: `No protocol versions found for role "${role}" in project "${projectSlug}".` }],
+        };
+      }
+
+      const lines = [
+        `Protocol versions for role "${role}" (${result.versions.length} total):`,
+        '',
+      ];
+
+      for (const v of result.versions) {
+        const current = v.isCurrent ? ' ← CURRENT' : '';
+        const summary = v.changeSummary ? ` — ${v.changeSummary}` : '';
+        const author = v.updatedByKey || (v.updatedBy as Record<string, unknown>)?.name || 'unknown';
+        lines.push(`- v${v.version}${current}: ${v.createdAt} by ${author}${summary}`);
+      }
+
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error listing protocol versions: ${message}` }],
         isError: true,
       };
     }
