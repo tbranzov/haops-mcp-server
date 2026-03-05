@@ -44,6 +44,22 @@ const server = new Server(
   { capabilities: { resources: {}, tools: {} } }
 );
 
+// Helper: format relative date for MCP output
+function formatRelativeDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 30) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+}
+
 /**
  * List available resources
  */
@@ -1702,6 +1718,308 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
           },
           required: ['projectSlug', 'role'],
+        },
+      },
+
+      // ===== Testing MCP Tools =====
+
+      {
+        name: 'haops_report_test_run',
+        description: 'Report test results to HAOps. Creates a TestRun with individual TestResult records. Used by agents to manually report results (Jest/Playwright reporters do this automatically).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            runner: { type: 'string', enum: ['jest', 'playwright', 'manual', 'other'], description: 'Test runner that produced results' },
+            environment: { type: 'string', enum: ['localhost', 'production', 'ci', 'other'], description: 'Environment where tests ran (optional)' },
+            commitSha: { type: 'string', description: 'Git commit SHA (optional)' },
+            branch: { type: 'string', description: 'Git branch name (optional)' },
+            summary: {
+              type: 'object',
+              description: 'Summary counts',
+              properties: {
+                total: { type: 'number' },
+                passed: { type: 'number' },
+                failed: { type: 'number' },
+                skipped: { type: 'number' },
+                durationMs: { type: 'number' },
+              },
+              required: ['total', 'passed', 'failed', 'skipped', 'durationMs'],
+            },
+            results: {
+              type: 'array',
+              description: 'Individual test results',
+              items: {
+                type: 'object',
+                properties: {
+                  testName: { type: 'string' },
+                  filePath: { type: 'string' },
+                  status: { type: 'string', enum: ['passed', 'failed', 'skipped', 'error'] },
+                  durationMs: { type: 'number' },
+                  errorMessage: { type: 'string' },
+                },
+                required: ['testName', 'filePath', 'status'],
+              },
+            },
+            coverage: {
+              type: 'object',
+              description: 'Coverage percentages (optional)',
+              properties: {
+                lines: { type: 'number' },
+                branches: { type: 'number' },
+                functions: { type: 'number' },
+              },
+            },
+          },
+          required: ['projectSlug', 'runner', 'summary', 'results'],
+        },
+      },
+      {
+        name: 'haops_get_test_health',
+        description: 'Get aggregated test health summary for a project or specific entity. Returns pass rates, trend, recent failures, and coverage data.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            entityType: { type: 'string', enum: ['Module', 'Feature', 'Issue'], description: 'Filter by entity type (optional)' },
+            entityId: { type: 'string', description: 'UUID of the entity to filter by (optional)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_list_tests',
+        description: 'List tests in a project with optional filters. Returns test records with metadata.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            type: { type: 'string', enum: ['unit', 'integration', 'performance', 'e2e'], description: 'Filter by test type (optional)' },
+            runner: { type: 'string', enum: ['jest', 'playwright', 'manual', 'generic'], description: 'Filter by test runner (optional)' },
+            suiteId: { type: 'string', description: 'Filter by test suite UUID (optional)' },
+            entityType: { type: 'string', enum: ['Module', 'Feature', 'Issue'], description: 'Filter by linked entity type (optional)' },
+            entityId: { type: 'string', description: 'Filter by linked entity UUID (optional)' },
+            limit: { type: 'number', description: 'Max results (default 50)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_list_test_runs',
+        description: 'List recent test runs for a project. Returns run summaries with pass/fail counts.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            runner: { type: 'string', enum: ['jest', 'playwright', 'manual', 'other'], description: 'Filter by runner (optional)' },
+            environment: { type: 'string', enum: ['localhost', 'production', 'ci', 'other'], description: 'Filter by environment (optional)' },
+            limit: { type: 'number', description: 'Max results (default 20)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_link_tests_to_entity',
+        description: 'Link tests to a module, feature, or issue by test IDs or file path pattern. Sets testableType and testableId on matching tests.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            entityType: { type: 'string', enum: ['Module', 'Feature', 'Issue'], description: 'Entity type to link tests to' },
+            entityId: { type: 'string', description: 'UUID of the entity' },
+            testIds: { type: 'array', items: { type: 'string' }, description: 'Explicit test UUIDs to link (optional)' },
+            filePathPattern: { type: 'string', description: 'Glob pattern for file paths, e.g. "tests/e2e/auth/*" (optional)' },
+          },
+          required: ['projectSlug', 'entityType', 'entityId'],
+        },
+      },
+      {
+        name: 'haops_list_test_suites',
+        description: 'List test suites for a project.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_export_test_suite',
+        description: 'Export a test suite as a JSON bundle for cross-project sharing. Includes suite config and all test definitions.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            suiteId: { type: 'string', description: 'UUID of the test suite to export' },
+          },
+          required: ['projectSlug', 'suiteId'],
+        },
+      },
+      {
+        name: 'haops_import_test_suite',
+        description: 'Import a test suite from a JSON bundle into a project. Creates new suite and test records with fresh UUIDs.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            bundle: {
+              type: 'object',
+              description: 'The exported suite bundle (from haops_export_test_suite)',
+              properties: {
+                suite: {
+                  type: 'object',
+                  properties: {
+                    name: { type: 'string' },
+                    description: { type: 'string' },
+                    config: { type: 'object' },
+                  },
+                  required: ['name'],
+                },
+                tests: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string' },
+                      filePath: { type: 'string' },
+                      type: { type: 'string' },
+                      runner: { type: 'string' },
+                      definition: { type: 'object' },
+                      envRequirements: { type: 'array', items: { type: 'string' } },
+                    },
+                    required: ['name', 'filePath'],
+                  },
+                },
+                sourceProject: { type: 'string' },
+              },
+              required: ['suite', 'tests'],
+            },
+          },
+          required: ['projectSlug', 'bundle'],
+        },
+      },
+
+      // ===== Git MCP Tools =====
+
+      {
+        name: 'haops_git_list_files',
+        description: 'List files and directories in a project\'s Git repository at a given path. Returns directory entries with type (file/dir), name, and SHA.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            path: { type: 'string', description: 'Directory path (default: root)' },
+            ref: { type: 'string', description: 'Git ref/branch (default: main)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_git_read_file',
+        description: 'Read file content from a project\'s Git repository. Returns text content for text files, or a "binary file" message for binary files.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            filePath: { type: 'string', description: 'File path in repository' },
+            ref: { type: 'string', description: 'Git ref/branch (default: main)' },
+          },
+          required: ['projectSlug', 'filePath'],
+        },
+      },
+      {
+        name: 'haops_git_commit_log',
+        description: 'Get recent commit history from a project\'s Git repository. Returns commits with SHA, author, date, and message.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            limit: { type: 'number', description: 'Number of commits (default: 20, max: 100)' },
+            ref: { type: 'string', description: 'Git ref/branch (default: main)' },
+            path: { type: 'string', description: 'Filter commits by file/directory path' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_git_get_remote_url',
+        description: 'Get SSH remote URL and setup instructions for pushing to HAOps Git. Returns the SSH URL, default branch, and copy-pasteable setup commands.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_manage_ssh_keys',
+        description: 'Manage SSH keys for HAOps Git access (list, add, or revoke). Agents can use this to self-service their SSH keys for git push access.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['list', 'add', 'revoke'],
+              description: 'Action to perform',
+            },
+            name: {
+              type: 'string',
+              description: 'Key name (required for add)',
+            },
+            publicKey: {
+              type: 'string',
+              description: 'SSH public key content (required for add)',
+            },
+            keyId: {
+              type: 'string',
+              description: 'Key UUID to revoke (required for revoke)',
+            },
+          },
+          required: ['action'],
+        },
+      },
+      {
+        name: 'haops_list_updates',
+        description: 'List available updates for a project. Shows update type, version, status, and date. Use to check for new MCP server versions, protocol changes, test suites, or onboarding templates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'The project slug (URL identifier)',
+            },
+            updateType: {
+              type: 'string',
+              enum: ['mcp_server', 'protocol', 'test_suite', 'onboarding_templates'],
+              description: 'Filter by update type (optional)',
+            },
+            status: {
+              type: 'string',
+              enum: ['available', 'downloaded', 'applied', 'dismissed'],
+              description: 'Filter by status (optional)',
+            },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_download_update',
+        description: 'Download/view an update artifact. For protocols: returns content directly as JSON. For MCP server: returns download instructions with path and size.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'The project slug (URL identifier)',
+            },
+            updateId: {
+              type: 'string',
+              description: 'UUID of the update to download',
+            },
+          },
+          required: ['projectSlug', 'updateId'],
         },
       },
     ],
@@ -3394,6 +3712,421 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [{ type: 'text', text: `Error listing protocol versions: ${message}` }],
         isError: true,
       };
+    }
+  }
+
+  // ===== Testing MCP Tool Implementations =====
+
+  if (name === 'haops_report_test_run') {
+    try {
+      const { projectSlug, runner, environment, commitSha, branch, summary, results, coverage } = args as {
+        projectSlug: string;
+        runner: string;
+        environment?: string;
+        commitSha?: string;
+        branch?: string;
+        summary: Record<string, unknown>;
+        results: Array<Record<string, unknown>>;
+        coverage?: Record<string, unknown>;
+      };
+
+      const payload: Record<string, unknown> = { runner, summary, results };
+      if (environment !== undefined) payload.environment = environment;
+      if (commitSha !== undefined) payload.commitSha = commitSha;
+      if (branch !== undefined) payload.branch = branch;
+      if (coverage !== undefined) payload.coverage = coverage;
+
+      const result = await apiClient.reportTestRun(projectSlug, payload);
+      return {
+        content: [{ type: 'text', text: `Test run reported successfully:\n${JSON.stringify(result, null, 2)}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error reporting test run: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_test_health') {
+    try {
+      const { projectSlug, entityType, entityId } = args as {
+        projectSlug: string;
+        entityType?: string;
+        entityId?: string;
+      };
+
+      const result = await apiClient.getTestHealth(projectSlug, entityType, entityId);
+      return {
+        content: [{ type: 'text', text: `Test health for project "${projectSlug}":\n${JSON.stringify(result, null, 2)}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting test health: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_tests') {
+    try {
+      const { projectSlug, type, runner, suiteId, entityType, entityId, limit } = args as {
+        projectSlug: string;
+        type?: string;
+        runner?: string;
+        suiteId?: string;
+        entityType?: string;
+        entityId?: string;
+        limit?: number;
+      };
+
+      const filters: Record<string, unknown> = {};
+      if (type) filters.type = type;
+      if (runner) filters.runner = runner;
+      if (suiteId) filters.suiteId = suiteId;
+      if (entityType) filters.testableType = entityType;
+      if (entityId) filters.testableId = entityId;
+      if (limit) filters.limit = limit;
+
+      const tests = await apiClient.listTests(projectSlug, filters);
+      return {
+        content: [{ type: 'text', text: `Tests in project "${projectSlug}" (${(tests as unknown[]).length} results):\n${JSON.stringify(tests, null, 2)}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing tests: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_test_runs') {
+    try {
+      const { projectSlug, runner, environment, limit } = args as {
+        projectSlug: string;
+        runner?: string;
+        environment?: string;
+        limit?: number;
+      };
+
+      const filters: Record<string, unknown> = {};
+      if (runner) filters.runner = runner;
+      if (environment) filters.environment = environment;
+      if (limit) filters.limit = limit;
+
+      const runs = await apiClient.listTestRuns(projectSlug, filters);
+      return {
+        content: [{ type: 'text', text: `Test runs in project "${projectSlug}" (${(runs as unknown[]).length} results):\n${JSON.stringify(runs, null, 2)}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing test runs: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_link_tests_to_entity') {
+    try {
+      const { projectSlug, entityType, entityId, testIds, filePathPattern } = args as {
+        projectSlug: string;
+        entityType: string;
+        entityId: string;
+        testIds?: string[];
+        filePathPattern?: string;
+      };
+
+      const result = await apiClient.linkTestsToEntity(projectSlug, {
+        entityType,
+        entityId,
+        testIds,
+        filePathPattern,
+      });
+      return {
+        content: [{ type: 'text', text: `Tests linked successfully:\n${JSON.stringify(result, null, 2)}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error linking tests: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_test_suites') {
+    try {
+      const { projectSlug } = args as { projectSlug: string };
+      const suites = await apiClient.listTestSuites(projectSlug);
+      return {
+        content: [{ type: 'text', text: `Test suites in project "${projectSlug}" (${(suites as unknown[]).length} results):\n${JSON.stringify(suites, null, 2)}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing test suites: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_export_test_suite') {
+    try {
+      const { projectSlug, suiteId } = args as { projectSlug: string; suiteId: string };
+      const bundle = await apiClient.exportTestSuite(projectSlug, suiteId);
+      return {
+        content: [{ type: 'text', text: `Test suite exported:\n${JSON.stringify(bundle, null, 2)}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error exporting test suite: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_import_test_suite') {
+    try {
+      const { projectSlug, bundle } = args as {
+        projectSlug: string;
+        bundle: Record<string, unknown>;
+      };
+      const result = await apiClient.importTestSuite(projectSlug, bundle);
+      return {
+        content: [{ type: 'text', text: `Test suite imported successfully:\n${JSON.stringify(result, null, 2)}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error importing test suite: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Git MCP Tool Implementations =====
+
+  if (name === 'haops_git_list_files') {
+    try {
+      const { projectSlug, path, ref } = args as {
+        projectSlug: string;
+        path?: string;
+        ref?: string;
+      };
+
+      const result = await apiClient.gitListFiles(projectSlug, path, ref) as {
+        entries?: Array<{ name: string; type: string }>;
+        ref?: string;
+        path?: string;
+      };
+      const entries = result.entries || [];
+      const displayRef = result.ref || ref || 'main';
+      const displayPath = result.path || path || '/';
+
+      if (entries.length === 0) {
+        return {
+          content: [{ type: 'text', text: `No files found in /${displayPath} (ref: ${displayRef})` }],
+        };
+      }
+
+      const lines = entries.map((e: { name: string; type: string }) =>
+        `${e.type === 'dir' ? '📁' : '📄'} ${e.name}${e.type === 'dir' ? '/' : ''}`
+      );
+      return {
+        content: [{ type: 'text', text: `Files in /${displayPath} (ref: ${displayRef}):\n${lines.join('\n')}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing files: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_git_read_file') {
+    try {
+      const { projectSlug, filePath, ref } = args as {
+        projectSlug: string;
+        filePath: string;
+        ref?: string;
+      };
+
+      const result = await apiClient.gitReadFile(projectSlug, filePath, ref) as {
+        content?: string;
+        binary?: boolean;
+        size?: number;
+        truncated?: boolean;
+      };
+
+      if (result.binary) {
+        return {
+          content: [{ type: 'text', text: `Binary file (${result.size || 0} bytes): ${filePath}` }],
+        };
+      }
+
+      let text = result.content || '';
+      if (result.truncated) {
+        text += '\n\n[Truncated — file exceeds 1MB]';
+      }
+
+      return {
+        content: [{ type: 'text', text }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error reading file: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_git_commit_log') {
+    try {
+      const { projectSlug, limit, ref, path } = args as {
+        projectSlug: string;
+        limit?: number;
+        ref?: string;
+        path?: string;
+      };
+
+      const result = await apiClient.gitCommitLog(projectSlug, limit, ref, path) as {
+        commits?: Array<{ sha: string; message: string; author: string; date: string }>;
+        ref?: string;
+      };
+      const commits = result.commits || [];
+      const displayRef = result.ref || ref || 'main';
+
+      if (commits.length === 0) {
+        return {
+          content: [{ type: 'text', text: `No commits found (ref: ${displayRef})` }],
+        };
+      }
+
+      const lines = commits.map((c: { sha: string; message: string; author: string; date: string }) => {
+        const shortSha = c.sha.substring(0, 7);
+        const relDate = formatRelativeDate(c.date);
+        return `${shortSha} — ${c.message} (${c.author}, ${relDate})`;
+      });
+
+      return {
+        content: [{ type: 'text', text: `Recent commits (ref: ${displayRef}):\n\n${lines.join('\n')}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting commit log: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_git_get_remote_url') {
+    try {
+      const { projectSlug } = args as { projectSlug: string };
+
+      const result = await apiClient.gitGetRemoteUrl(projectSlug) as {
+        sshUrl?: string;
+        defaultBranch?: string;
+        setupInstructions?: string[];
+        status?: string;
+      };
+
+      const lines = [
+        `HAOps Git remote for project "${projectSlug}":`,
+        '',
+        `SSH URL: ${result.sshUrl || 'Not configured'}`,
+        `Default branch: ${result.defaultBranch || 'main'}`,
+        `Status: ${result.status || 'unknown'}`,
+      ];
+
+      if (result.setupInstructions?.length) {
+        lines.push('', 'Setup:');
+        result.setupInstructions.forEach((cmd: string) => lines.push(cmd));
+      }
+
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting remote URL: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_manage_ssh_keys') {
+    try {
+      const { action, name: keyName, publicKey, keyId } = args as {
+        action: string;
+        name?: string;
+        publicKey?: string;
+        keyId?: string;
+      };
+
+      if (action === 'list') {
+        const keys = await apiClient.listSshKeys();
+        if (!keys || (Array.isArray(keys) && keys.length === 0)) {
+          return { content: [{ type: 'text', text: 'No SSH keys registered.' }] };
+        }
+        const lines = (keys as Array<Record<string, unknown>>).map((k) =>
+          `- ${k.name} (${k.keyType}) — ${k.fingerprint} — Added: ${formatRelativeDate(k.createdAt as string)}`
+        );
+        return { content: [{ type: 'text', text: `SSH Keys:\n${lines.join('\n')}` }] };
+      }
+
+      if (action === 'add') {
+        if (!keyName || !publicKey) {
+          return { content: [{ type: 'text', text: 'Error: name and publicKey are required for add action' }], isError: true };
+        }
+        const result = await apiClient.addSshKey(keyName, publicKey);
+        return {
+          content: [{ type: 'text', text: `SSH key added:\n- Name: ${result.name}\n- Type: ${result.keyType}\n- Fingerprint: ${result.fingerprint}\n\nNote: Run SSH key sync to deploy the key.` }],
+        };
+      }
+
+      if (action === 'revoke') {
+        if (!keyId) {
+          return { content: [{ type: 'text', text: 'Error: keyId is required for revoke action' }], isError: true };
+        }
+        await apiClient.revokeSshKey(keyId);
+        return {
+          content: [{ type: 'text', text: `SSH key ${keyId} revoked. Run SSH key sync to update authorized_keys.` }],
+        };
+      }
+
+      return { content: [{ type: 'text', text: `Unknown action: ${action}. Use list, add, or revoke.` }], isError: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error managing SSH keys: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_updates') {
+    try {
+      const { projectSlug, updateType, status } = args as {
+        projectSlug: string;
+        updateType?: string;
+        status?: string;
+      };
+
+      const result = await apiClient.listUpdates(projectSlug, { updateType, status });
+      const updates = result.data || [];
+
+      if (updates.length === 0) {
+        return { content: [{ type: 'text', text: 'No updates found.' }] };
+      }
+
+      const typeLabels: Record<string, string> = {
+        mcp_server: 'MCP Server',
+        protocol: 'Protocol',
+        test_suite: 'Test Suite',
+        onboarding_templates: 'Onboarding',
+      };
+
+      const lines = updates.map((u: Record<string, unknown>) => {
+        const type = typeLabels[u.updateType as string] || u.updateType;
+        const version = u.version ? ` v${u.version}` : '';
+        const date = u.createdAt ? ` (${formatRelativeDate(u.createdAt as string)})` : '';
+        return `- [${u.status}] ${type}${version}: ${u.title}${date}\n  ID: ${u.id}`;
+      });
+
+      return {
+        content: [{ type: 'text', text: `${updates.length} update(s) found:\n\n${lines.join('\n')}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing updates: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_download_update') {
+    try {
+      const { projectSlug, updateId } = args as {
+        projectSlug: string;
+        updateId: string;
+      };
+
+      const result = await apiClient.downloadUpdate(projectSlug, updateId);
+
+      return {
+        content: [{ type: 'text', text: `Update content:\n${JSON.stringify(result, null, 2)}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error downloading update: ${message}` }], isError: true };
     }
   }
 

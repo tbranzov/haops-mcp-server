@@ -1478,4 +1478,289 @@ export class HAOpsApiClient {
       return this.handleError(error);
     }
   }
+
+  // ===== Testing MCP Tools =====
+
+  async reportTestRun(
+    projectSlug: string,
+    data: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/test-runs/report`,
+        data,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getTestHealth(
+    projectSlug: string,
+    entityType?: string,
+    entityId?: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const params: Record<string, string> = {};
+      if (entityType) params.entityType = entityType;
+      if (entityId) params.entityId = entityId;
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/test-health`,
+        { params },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async listTests(
+    projectSlug: string,
+    filters?: Record<string, unknown>,
+  ): Promise<unknown[]> {
+    try {
+      const params: Record<string, unknown> = {};
+      if (filters) {
+        if (filters.type) params.type = filters.type;
+        if (filters.runner) params.runner = filters.runner;
+        if (filters.suiteId) params.suiteId = filters.suiteId;
+        if (filters.testableType) params.testableType = filters.testableType;
+        if (filters.testableId) params.testableId = filters.testableId;
+        if (filters.limit) params.limit = filters.limit;
+      }
+      const response = await this.axios.get<unknown[]>(
+        `/api/projects/${projectSlug}/tests`,
+        { params },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async listTestRuns(
+    projectSlug: string,
+    filters?: Record<string, unknown>,
+  ): Promise<unknown[]> {
+    try {
+      const params: Record<string, unknown> = {};
+      if (filters) {
+        if (filters.runner) params.runner = filters.runner;
+        if (filters.environment) params.environment = filters.environment;
+        if (filters.limit) params.limit = filters.limit;
+      }
+      const response = await this.axios.get<unknown[]>(
+        `/api/projects/${projectSlug}/test-runs`,
+        { params },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async linkTestsToEntity(
+    projectSlug: string,
+    data: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.put<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/tests/link`,
+        data,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async listTestSuites(
+    projectSlug: string,
+  ): Promise<unknown[]> {
+    try {
+      const response = await this.axios.get<unknown[]>(
+        `/api/projects/${projectSlug}/test-suites`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async exportTestSuite(
+    projectSlug: string,
+    suiteId: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/test-suites/${suiteId}/export`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async importTestSuite(
+    projectSlug: string,
+    bundle: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/test-suites/import`,
+        bundle,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // ===== Git MCP Tools =====
+
+  async gitListFiles(
+    projectSlug: string,
+    path?: string,
+    ref?: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const params: Record<string, string> = {};
+      if (path) params.path = path;
+      if (ref) params.ref = ref;
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git/files`,
+        { params },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async gitReadFile(
+    projectSlug: string,
+    filePath: string,
+    ref?: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const params: Record<string, string> = {};
+      if (ref) params.ref = ref;
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git/files/${filePath}`,
+        { params },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async gitCommitLog(
+    projectSlug: string,
+    limit?: number,
+    ref?: string,
+    path?: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const params: Record<string, string> = {};
+      if (limit) params.limit = String(limit);
+      if (ref) params.ref = ref;
+      if (path) params.path = path;
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git/commits`,
+        { params },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async gitGetRemoteUrl(
+    projectSlug: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git/remote`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // ===== SSH Key Management =====
+
+  async listSshKeys(): Promise<Record<string, unknown>[]> {
+    try {
+      const response = await this.axios.get<Record<string, unknown>[]>(
+        '/api/user/ssh-keys',
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async addSshKey(
+    name: string,
+    publicKey: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        '/api/user/ssh-keys',
+        { name, publicKey },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async revokeSshKey(keyId: string): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.delete<Record<string, unknown>>(
+        `/api/user/ssh-keys/${keyId}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // ===== Project Updates =====
+
+  async listUpdates(
+    projectSlug: string,
+    params?: { updateType?: string; status?: string; limit?: number },
+  ): Promise<{ data: Record<string, unknown>[]; total: number }> {
+    try {
+      const queryParams: Record<string, string> = {};
+      if (params?.updateType) queryParams.updateType = params.updateType;
+      if (params?.status) queryParams.status = params.status;
+      if (params?.limit) queryParams.limit = String(params.limit);
+      const response = await this.axios.get<{ data: Record<string, unknown>[]; total: number }>(
+        `/api/projects/${projectSlug}/updates`,
+        { params: queryParams },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async downloadUpdate(
+    projectSlug: string,
+    updateId: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/updates/${updateId}/download`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
 }
