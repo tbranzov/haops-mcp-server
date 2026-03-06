@@ -1904,33 +1904,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
       {
         name: 'haops_git_list_files',
-        description: 'List files and directories in a project\'s Git repository at a given path. Returns directory entries with type (file/dir), name, and SHA.',
+        description: 'List files and directories in a project\'s Git repository at a given path. Returns directory entries with type (file/dir), name, and SHA. Supports multi-repo projects via repositoryName.',
         inputSchema: {
           type: 'object',
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
             path: { type: 'string', description: 'Directory path (default: root)' },
             ref: { type: 'string', description: 'Git ref/branch (default: main)' },
+            repositoryName: { type: 'string', description: 'Repository name for multi-repo projects (default: first/main repo)' },
           },
           required: ['projectSlug'],
         },
       },
       {
         name: 'haops_git_read_file',
-        description: 'Read file content from a project\'s Git repository. Returns text content for text files, or a "binary file" message for binary files.',
+        description: 'Read file content from a project\'s Git repository. Returns text content for text files, or a "binary file" message for binary files. Supports multi-repo projects via repositoryName.',
         inputSchema: {
           type: 'object',
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
             filePath: { type: 'string', description: 'File path in repository' },
             ref: { type: 'string', description: 'Git ref/branch (default: main)' },
+            repositoryName: { type: 'string', description: 'Repository name for multi-repo projects (default: first/main repo)' },
           },
           required: ['projectSlug', 'filePath'],
         },
       },
       {
         name: 'haops_git_commit_log',
-        description: 'Get recent commit history from a project\'s Git repository. Returns commits with SHA, author, date, and message.',
+        description: 'Get recent commit history from a project\'s Git repository. Returns commits with SHA, author, date, and message. Supports multi-repo projects via repositoryName.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1938,17 +1940,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             limit: { type: 'number', description: 'Number of commits (default: 20, max: 100)' },
             ref: { type: 'string', description: 'Git ref/branch (default: main)' },
             path: { type: 'string', description: 'Filter commits by file/directory path' },
+            repositoryName: { type: 'string', description: 'Repository name for multi-repo projects (default: first/main repo)' },
           },
           required: ['projectSlug'],
         },
       },
       {
         name: 'haops_git_get_remote_url',
-        description: 'Get SSH remote URL and setup instructions for pushing to HAOps Git. Returns the SSH URL, default branch, and copy-pasteable setup commands.',
+        description: 'Get SSH remote URL and setup instructions for pushing to HAOps Git. Returns the SSH URL, default branch, and copy-pasteable setup commands. Supports multi-repo projects via repositoryName.',
         inputSchema: {
           type: 'object',
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            repositoryName: { type: 'string', description: 'Repository name for multi-repo projects (default: first/main repo)' },
           },
           required: ['projectSlug'],
         },
@@ -3889,13 +3893,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_git_list_files') {
     try {
-      const { projectSlug, path, ref } = args as {
+      const { projectSlug, path, ref, repositoryName } = args as {
         projectSlug: string;
         path?: string;
         ref?: string;
+        repositoryName?: string;
       };
 
-      const result = await apiClient.gitListFiles(projectSlug, path, ref) as {
+      const result = await apiClient.gitListFiles(projectSlug, path, ref, repositoryName) as {
         entries?: Array<{ name: string; type: string }>;
         ref?: string;
         path?: string;
@@ -3924,13 +3929,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_git_read_file') {
     try {
-      const { projectSlug, filePath, ref } = args as {
+      const { projectSlug, filePath, ref, repositoryName } = args as {
         projectSlug: string;
         filePath: string;
         ref?: string;
+        repositoryName?: string;
       };
 
-      const result = await apiClient.gitReadFile(projectSlug, filePath, ref) as {
+      const result = await apiClient.gitReadFile(projectSlug, filePath, ref, repositoryName) as {
         content?: string;
         binary?: boolean;
         size?: number;
@@ -3959,14 +3965,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_git_commit_log') {
     try {
-      const { projectSlug, limit, ref, path } = args as {
+      const { projectSlug, limit, ref, path, repositoryName } = args as {
         projectSlug: string;
         limit?: number;
         ref?: string;
         path?: string;
+        repositoryName?: string;
       };
 
-      const result = await apiClient.gitCommitLog(projectSlug, limit, ref, path) as {
+      const result = await apiClient.gitCommitLog(projectSlug, limit, ref, path, repositoryName) as {
         commits?: Array<{ sha: string; message: string; author: string; date: string }>;
         ref?: string;
       };
@@ -3996,9 +4003,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_git_get_remote_url') {
     try {
-      const { projectSlug } = args as { projectSlug: string };
+      const { projectSlug, repositoryName } = args as { projectSlug: string; repositoryName?: string };
 
-      const result = await apiClient.gitGetRemoteUrl(projectSlug) as {
+      const result = await apiClient.gitGetRemoteUrl(projectSlug, repositoryName) as {
         sshUrl?: string;
         defaultBranch?: string;
         setupInstructions?: string[];

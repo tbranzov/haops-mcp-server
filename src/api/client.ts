@@ -1623,11 +1623,13 @@ export class HAOpsApiClient {
     projectSlug: string,
     path?: string,
     ref?: string,
+    repositoryName?: string,
   ): Promise<Record<string, unknown>> {
     try {
       const params: Record<string, string> = {};
       if (path) params.path = path;
       if (ref) params.ref = ref;
+      if (repositoryName) params.repo = repositoryName;
       const response = await this.axios.get<Record<string, unknown>>(
         `/api/projects/${projectSlug}/git/files`,
         { params },
@@ -1642,10 +1644,12 @@ export class HAOpsApiClient {
     projectSlug: string,
     filePath: string,
     ref?: string,
+    repositoryName?: string,
   ): Promise<Record<string, unknown>> {
     try {
       const params: Record<string, string> = {};
       if (ref) params.ref = ref;
+      if (repositoryName) params.repo = repositoryName;
       const response = await this.axios.get<Record<string, unknown>>(
         `/api/projects/${projectSlug}/git/files/${filePath}`,
         { params },
@@ -1661,12 +1665,14 @@ export class HAOpsApiClient {
     limit?: number,
     ref?: string,
     path?: string,
+    repositoryName?: string,
   ): Promise<Record<string, unknown>> {
     try {
       const params: Record<string, string> = {};
       if (limit) params.limit = String(limit);
       if (ref) params.ref = ref;
       if (path) params.path = path;
+      if (repositoryName) params.repo = repositoryName;
       const response = await this.axios.get<Record<string, unknown>>(
         `/api/projects/${projectSlug}/git/commits`,
         { params },
@@ -1679,10 +1685,14 @@ export class HAOpsApiClient {
 
   async gitGetRemoteUrl(
     projectSlug: string,
+    repositoryName?: string,
   ): Promise<Record<string, unknown>> {
     try {
+      const params: Record<string, string> = {};
+      if (repositoryName) params.repo = repositoryName;
       const response = await this.axios.get<Record<string, unknown>>(
         `/api/projects/${projectSlug}/git/remote`,
+        { params },
       );
       return response.data;
     } catch (error) {
