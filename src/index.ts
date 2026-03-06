@@ -1984,6 +1984,93 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['action'],
         },
       },
+      // ===== Merge Requests =====
+      {
+        name: 'haops_create_merge_request',
+        description: 'Create a merge request in a HAOps Git repository. Auto-detects conflicts and snapshots commit SHAs. Returns the created MR with status, conflict info, and diff stats.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            repositoryName: { type: 'string', description: 'Repository name for multi-repo projects (default: first/main repo)' },
+            sourceBranch: { type: 'string', description: 'Source branch to merge from' },
+            targetBranch: { type: 'string', description: 'Target branch to merge into' },
+            title: { type: 'string', description: 'MR title (max 255 chars)' },
+            description: { type: 'string', description: 'MR description (optional)' },
+          },
+          required: ['projectSlug', 'sourceBranch', 'targetBranch', 'title'],
+        },
+      },
+      {
+        name: 'haops_get_merge_request',
+        description: 'Get merge request detail including diff stats, reviews with verdicts, conflict status, and branch info. Use this to review an MR before approving or merging.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            mergeRequestId: { type: 'string', description: 'MR UUID' },
+          },
+          required: ['projectSlug', 'mergeRequestId'],
+        },
+      },
+      {
+        name: 'haops_list_merge_requests',
+        description: 'List merge requests for a project with optional filters. Returns MR title, status, branches, author, and timestamps.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            repositoryName: { type: 'string', description: 'Filter by repository name' },
+            status: { type: 'string', enum: ['draft', 'open', 'approved', 'merged', 'closed'], description: 'Filter by MR status' },
+            targetBranch: { type: 'string', description: 'Filter by target branch' },
+            limit: { type: 'number', description: 'Max results (default: 20)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_review_merge_request',
+        description: 'Submit a review on a merge request. Verdicts: approved, changes_requested, commented. When enough approvals are met (per branch protection rules), MR status auto-transitions to approved.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            mergeRequestId: { type: 'string', description: 'MR UUID' },
+            verdict: { type: 'string', enum: ['approved', 'changes_requested', 'commented'], description: 'Review verdict' },
+            body: { type: 'string', description: 'Review comment (optional)' },
+          },
+          required: ['projectSlug', 'mergeRequestId', 'verdict'],
+        },
+      },
+      {
+        name: 'haops_merge_merge_request',
+        description: 'Merge an approved merge request. Checks branch protection rules (required approvals, allowed roles) and conflicts before merging. Supports fast-forward and three-way merge.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            mergeRequestId: { type: 'string', description: 'MR UUID' },
+            deleteSourceBranch: { type: 'boolean', description: 'Delete source branch after merge (default: false)' },
+            mergeCommitMessage: { type: 'string', description: 'Custom merge commit message (optional)' },
+          },
+          required: ['projectSlug', 'mergeRequestId'],
+        },
+      },
+      {
+        name: 'haops_get_branch_diff',
+        description: 'Compare two branches in a HAOps Git repository. Returns commits ahead/behind, changed files with stats, diff content, and conflict detection. Use before creating an MR to preview changes.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            repositoryName: { type: 'string', description: 'Repository name for multi-repo projects (default: first/main repo)' },
+            sourceBranch: { type: 'string', description: 'Source branch' },
+            targetBranch: { type: 'string', description: 'Target branch' },
+          },
+          required: ['projectSlug', 'sourceBranch', 'targetBranch'],
+        },
+      },
+      // ===== Distribution & Updates =====
       {
         name: 'haops_list_updates',
         description: 'List available updates for a project. Shows update type, version, status, and date. Use to check for new MCP server versions, protocol changes, test suites, or onboarding templates.',
@@ -2024,6 +2111,45 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
           },
           required: ['projectSlug', 'updateId'],
+        },
+      },
+      // ===== Image Uploads =====
+      {
+        name: 'haops_upload_doc_image',
+        description: 'Upload an image to a documentation section. Accepts base64-encoded image data. Returns the attachment record with a URL for embedding in content.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            artifactSlug: { type: 'string', description: 'The doc artifact slug' },
+            sectionSlug: { type: 'string', description: 'The doc section slug' },
+            imageBase64: { type: 'string', description: 'Base64-encoded image data' },
+            filename: { type: 'string', description: 'Filename with extension (e.g. screenshot.png)' },
+            mimeType: {
+              type: 'string',
+              description: 'Image MIME type',
+              enum: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'],
+            },
+          },
+          required: ['projectSlug', 'artifactSlug', 'sectionSlug', 'imageBase64', 'filename', 'mimeType'],
+        },
+      },
+      {
+        name: 'haops_upload_help_image',
+        description: 'Upload an image to a help article. Accepts base64-encoded image data. Admin-only. Returns the attachment record with a URL for embedding in content.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            articleSlug: { type: 'string', description: 'The help article slug' },
+            imageBase64: { type: 'string', description: 'Base64-encoded image data' },
+            filename: { type: 'string', description: 'Filename with extension (e.g. screenshot.png)' },
+            mimeType: {
+              type: 'string',
+              description: 'Image MIME type',
+              enum: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'],
+            },
+          },
+          required: ['articleSlug', 'imageBase64', 'filename', 'mimeType'],
         },
       },
     ],
@@ -4134,6 +4260,291 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error downloading update: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Merge Requests =====
+
+  if (name === 'haops_create_merge_request') {
+    try {
+      const { projectSlug, repositoryName, sourceBranch, targetBranch, title, description } = args as {
+        projectSlug: string;
+        repositoryName?: string;
+        sourceBranch: string;
+        targetBranch: string;
+        title: string;
+        description?: string;
+      };
+
+      const result = await apiClient.createMergeRequest(projectSlug, {
+        repositoryName, sourceBranch, targetBranch, title, description,
+      }) as Record<string, unknown>;
+
+      const mr = result as Record<string, unknown>;
+      const conflicts = mr.hasConflicts ? ` ⚠️ CONFLICTS in ${(mr.conflictFiles as string[] || []).length} file(s)` : '';
+      const lines = [
+        `✅ Merge request created:`,
+        `  ID: ${mr.id}`,
+        `  Title: ${mr.title}`,
+        `  ${mr.sourceBranch} → ${mr.targetBranch}`,
+        `  Status: ${mr.status}${conflicts}`,
+      ];
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error creating merge request: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_merge_request') {
+    try {
+      const { projectSlug, mergeRequestId } = args as {
+        projectSlug: string;
+        mergeRequestId: string;
+      };
+
+      const mr = await apiClient.getMergeRequest(projectSlug, mergeRequestId) as Record<string, unknown>;
+
+      const statusIcon: Record<string, string> = {
+        draft: '📝', open: '🔵', approved: '✅', merged: '🟣', closed: '⚫',
+      };
+
+      const reviews = (mr.reviews || []) as Array<Record<string, unknown>>;
+      const diffStats = mr.diffStats as Record<string, unknown> | undefined;
+      const author = mr.author as Record<string, unknown> | undefined;
+      const conflicts = mr.hasConflicts ? `\n⚠️ Conflicts: ${((mr.conflictFiles as string[]) || []).join(', ')}` : '';
+
+      const lines = [
+        `${statusIcon[mr.status as string] || '❓'} ${mr.title}`,
+        `  ${mr.sourceBranch} → ${mr.targetBranch}  |  Status: ${mr.status}`,
+        `  Author: ${author?.username || 'unknown'}  |  Created: ${mr.createdAt ? formatRelativeDate(mr.createdAt as string) : 'unknown'}`,
+      ];
+
+      if (diffStats) {
+        const files = (diffStats as Record<string, unknown>).files as Array<Record<string, unknown>> | undefined;
+        const ahead = (diffStats as Record<string, unknown>).ahead;
+        lines.push(`  Diff: ${ahead || 0} commit(s) ahead, ${files?.length || 0} file(s) changed`);
+      }
+
+      lines.push(conflicts);
+
+      if (reviews.length > 0) {
+        lines.push('\nReviews:');
+        for (const r of reviews) {
+          const reviewer = r.reviewer as Record<string, unknown> | undefined;
+          const verdictIcon: Record<string, string> = { approved: '✅', changes_requested: '❌', commented: '💬' };
+          lines.push(`  ${verdictIcon[r.verdict as string] || '?'} ${reviewer?.username || 'unknown'}: ${r.verdict}${r.body ? ` — ${r.body}` : ''}`);
+        }
+      }
+
+      if (mr.mergeCommitSha) {
+        lines.push(`\nMerge commit: ${(mr.mergeCommitSha as string).substring(0, 7)}`);
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting merge request: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_merge_requests') {
+    try {
+      const { projectSlug, repositoryName, status, targetBranch, limit } = args as {
+        projectSlug: string;
+        repositoryName?: string;
+        status?: string;
+        targetBranch?: string;
+        limit?: number;
+      };
+
+      const result = await apiClient.listMergeRequests(projectSlug, { repositoryName, status, targetBranch, limit });
+      const mrs = result.data || [];
+
+      if (mrs.length === 0) {
+        return { content: [{ type: 'text', text: 'No merge requests found.' }] };
+      }
+
+      const statusIcon: Record<string, string> = {
+        draft: '📝', open: '🔵', approved: '✅', merged: '🟣', closed: '⚫',
+      };
+
+      const lines = mrs.map((mr: Record<string, unknown>) => {
+        const icon = statusIcon[mr.status as string] || '❓';
+        const author = mr.author as Record<string, unknown> | undefined;
+        const date = mr.createdAt ? formatRelativeDate(mr.createdAt as string) : '';
+        return `${icon} [${mr.status}] ${mr.title}\n  ${mr.sourceBranch} → ${mr.targetBranch}  |  ${author?.username || 'unknown'}  |  ${date}\n  ID: ${mr.id}`;
+      });
+
+      return {
+        content: [{ type: 'text', text: `${mrs.length} merge request(s):\n\n${lines.join('\n\n')}` }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing merge requests: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_review_merge_request') {
+    try {
+      const { projectSlug, mergeRequestId, verdict, body } = args as {
+        projectSlug: string;
+        mergeRequestId: string;
+        verdict: string;
+        body?: string;
+      };
+
+      const result = await apiClient.reviewMergeRequest(projectSlug, mergeRequestId, { verdict, body }) as Record<string, unknown>;
+
+      const verdictIcon: Record<string, string> = { approved: '✅', changes_requested: '❌', commented: '💬' };
+      const lines = [
+        `${verdictIcon[verdict] || '?'} Review submitted: ${verdict}`,
+        body ? `  Comment: ${body}` : '',
+        result.mrStatus ? `  MR status: ${result.mrStatus}` : '',
+      ].filter(Boolean);
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error submitting review: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_merge_merge_request') {
+    try {
+      const { projectSlug, mergeRequestId, deleteSourceBranch, mergeCommitMessage } = args as {
+        projectSlug: string;
+        mergeRequestId: string;
+        deleteSourceBranch?: boolean;
+        mergeCommitMessage?: string;
+      };
+
+      const result = await apiClient.mergeMergeRequest(projectSlug, mergeRequestId, {
+        deleteSourceBranch, mergeCommitMessage,
+      }) as Record<string, unknown>;
+
+      const mr = result as Record<string, unknown>;
+      const lines = [
+        `🟣 Merge request merged successfully!`,
+        mr.mergeCommitSha ? `  Merge commit: ${(mr.mergeCommitSha as string).substring(0, 7)}` : '  Fast-forward merge (no merge commit)',
+        deleteSourceBranch ? `  Source branch deleted` : '',
+      ].filter(Boolean);
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error merging: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_branch_diff') {
+    try {
+      const { projectSlug, repositoryName, sourceBranch, targetBranch } = args as {
+        projectSlug: string;
+        repositoryName?: string;
+        sourceBranch: string;
+        targetBranch: string;
+      };
+
+      const result = await apiClient.getBranchDiff(projectSlug, { repositoryName, sourceBranch, targetBranch }) as Record<string, unknown>;
+
+      const commits = (result.commits || []) as Array<Record<string, unknown>>;
+      const files = (result.files || []) as Array<Record<string, unknown>>;
+      const hasConflicts = result.hasConflicts as boolean;
+      const conflictFiles = (result.conflictFiles || []) as string[];
+
+      const lines = [
+        `Branch diff: ${sourceBranch} → ${targetBranch}`,
+        `  Ahead: ${result.aheadBy || 0} commit(s)  |  Behind: ${result.behindBy || 0} commit(s)`,
+        `  Changed files: ${files.length}`,
+        hasConflicts ? `  ⚠️ Conflicts in: ${conflictFiles.join(', ')}` : '  No conflicts',
+      ];
+
+      if (commits.length > 0) {
+        lines.push('\nCommits:');
+        for (const c of commits.slice(0, 20)) {
+          const shortSha = (c.sha as string || '').substring(0, 7);
+          const date = c.date ? formatRelativeDate(c.date as string) : '';
+          lines.push(`  ${shortSha} — ${c.message} (${c.author}, ${date})`);
+        }
+        if (commits.length > 20) {
+          lines.push(`  ... and ${commits.length - 20} more`);
+        }
+      }
+
+      if (files.length > 0) {
+        lines.push('\nFiles:');
+        for (const f of files.slice(0, 30)) {
+          const additions = f.additions || 0;
+          const deletions = f.deletions || 0;
+          lines.push(`  ${f.status || 'M'} ${f.path} (+${additions} -${deletions})`);
+        }
+        if (files.length > 30) {
+          lines.push(`  ... and ${files.length - 30} more`);
+        }
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting branch diff: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_upload_doc_image') {
+    try {
+      const { projectSlug, artifactSlug, sectionSlug, imageBase64, filename, mimeType } = args as {
+        projectSlug: string;
+        artifactSlug: string;
+        sectionSlug: string;
+        imageBase64: string;
+        filename: string;
+        mimeType: string;
+      };
+
+      const url = `/api/projects/${projectSlug}/docs/${artifactSlug}/sections/${sectionSlug}/attachments`;
+      const result = await apiClient.requestFormData(url, filename, imageBase64, mimeType) as Record<string, unknown>;
+
+      const lines = [
+        `Image uploaded successfully!`,
+        `  ID: ${result.id}`,
+        `  Filename: ${result.originalFilename}`,
+        `  Size: ${result.fileSize} bytes`,
+        `  URL: ${result.url}`,
+      ];
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error uploading doc image: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_upload_help_image') {
+    try {
+      const { articleSlug, imageBase64, filename, mimeType } = args as {
+        articleSlug: string;
+        imageBase64: string;
+        filename: string;
+        mimeType: string;
+      };
+
+      const url = `/api/help/articles/${articleSlug}/attachments`;
+      const result = await apiClient.requestFormData(url, filename, imageBase64, mimeType) as Record<string, unknown>;
+
+      const lines = [
+        `Image uploaded successfully!`,
+        `  ID: ${result.id}`,
+        `  Filename: ${result.originalFilename}`,
+        `  Size: ${result.fileSize} bytes`,
+        `  URL: ${result.url}`,
+      ];
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error uploading help image: ${message}` }], isError: true };
     }
   }
 

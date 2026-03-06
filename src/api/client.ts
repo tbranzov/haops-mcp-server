@@ -115,6 +115,22 @@ export class HAOpsApiClient {
     }
   }
 
+  // Generic FormData request (for file uploads — base64 → multipart/form-data)
+  async requestFormData(url: string, filename: string, imageBase64: string, mimeType: string): Promise<unknown> {
+    try {
+      const FormData = (await import('form-data')).default;
+      const buffer = Buffer.from(imageBase64, 'base64');
+      const form = new FormData();
+      form.append('file', buffer, { filename, contentType: mimeType });
+      const response = await this.axios.post(url, form, {
+        headers: { ...form.getHeaders() },
+      });
+      return response.data;
+    } catch (error) {
+      this.handleError(error);
+    }
+  }
+
   // Slug → UUID resolver (cached)
   async resolveProjectId(slug: string): Promise<string> {
     if (this.projectIdCache.has(slug)) {
@@ -1732,6 +1748,115 @@ export class HAOpsApiClient {
     try {
       const response = await this.axios.delete<Record<string, unknown>>(
         `/api/user/ssh-keys/${keyId}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // ===== Merge Requests =====
+
+  async listMergeRequests(
+    projectSlug: string,
+    params?: { repositoryName?: string; status?: string; targetBranch?: string; limit?: number },
+  ): Promise<{ data: Record<string, unknown>[]; total: number }> {
+    try {
+      const queryParams: Record<string, string> = {};
+      if (params?.repositoryName) queryParams.repo = params.repositoryName;
+      if (params?.status) queryParams.status = params.status;
+      if (params?.targetBranch) queryParams.targetBranch = params.targetBranch;
+      if (params?.limit) queryParams.limit = String(params.limit);
+      const response = await this.axios.get<{ data: Record<string, unknown>[]; total: number }>(
+        `/api/projects/${projectSlug}/git/merge-requests`,
+        { params: queryParams },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async createMergeRequest(
+    projectSlug: string,
+    data: {
+      repositoryName?: string;
+      sourceBranch: string;
+      targetBranch: string;
+      title: string;
+      description?: string;
+    },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git/merge-requests`,
+        data,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getMergeRequest(
+    projectSlug: string,
+    mergeRequestId: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git/merge-requests/${mergeRequestId}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async reviewMergeRequest(
+    projectSlug: string,
+    mergeRequestId: string,
+    data: { verdict: string; body?: string },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git/merge-requests/${mergeRequestId}/reviews`,
+        data,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async mergeMergeRequest(
+    projectSlug: string,
+    mergeRequestId: string,
+    data?: { deleteSourceBranch?: boolean; mergeCommitMessage?: string },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git/merge-requests/${mergeRequestId}/merge`,
+        data || {},
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async getBranchDiff(
+    projectSlug: string,
+    params: { repositoryName?: string; sourceBranch: string; targetBranch: string },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const queryParams: Record<string, string> = {
+        source: params.sourceBranch,
+        target: params.targetBranch,
+      };
+      if (params.repositoryName) queryParams.repo = params.repositoryName;
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git/branch-diff`,
+        { params: queryParams },
       );
       return response.data;
     } catch (error) {
