@@ -169,6 +169,17 @@ export interface UpdateIssueRequest {
 
 // Communication entities
 
+export interface Channel {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  isDefault: boolean;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Discussion {
   id: string;
   channelId: string | null;

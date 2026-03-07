@@ -610,7 +610,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_create_discussion',
-        description: 'Create a discussion thread in a HAOps project. Can be channel-based, entity-linked (Module/Feature/Issue), or both.',
+        description: 'Create a discussion thread in a HAOps project. Two modes: (1) Entity-linked — provide discussableType + discussableId to link to a Module/Feature/Issue (no channelId needed). (2) Channel-based — provide channelId (use haops_list_channels to find it). Can combine both. At least one of channelId or discussableType+discussableId is required.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -634,16 +634,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             channelId: {
               type: 'string',
-              description: 'UUID of the channel (for channel-based discussions)',
+              description: 'UUID of the channel. Required for channel-based discussions. Use haops_list_channels to get valid channel UUIDs.',
             },
             discussableType: {
               type: 'string',
-              description: 'Entity type to link the discussion to',
+              description: 'Entity type to link the discussion to. For entity-linked discussions, provide both discussableType and discussableId (no channelId needed).',
               enum: ['Module', 'Feature', 'Issue'],
             },
             discussableId: {
               type: 'string',
-              description: 'UUID of the entity to link the discussion to',
+              description: 'UUID of the entity to link the discussion to. Required together with discussableType for entity-linked discussions.',
             },
             firstMessage: {
               type: 'string',
@@ -685,6 +685,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Filter by discussion status',
               enum: ['open', 'in-progress', 'resolved', 'closed'],
+            },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_list_channels',
+        description: 'List all channels in a HAOps project. Use this to discover channel UUIDs needed for creating channel-based discussions via haops_create_discussion.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'The project slug (URL identifier)',
             },
           },
           required: ['projectSlug'],
@@ -2740,6 +2754,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error listing discussions: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_list_channels') {
+    try {
+      const { projectSlug } = args as { projectSlug: string };
+      const channels = await apiClient.listChannels(projectSlug);
+      return {
+        content: [{
+          type: 'text',
+          text: `Project channels (${channels.length}):\n${JSON.stringify(channels, null, 2)}`,
+        }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error listing channels: ${message}` }],
         isError: true,
       };
     }

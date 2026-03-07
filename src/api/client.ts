@@ -4,6 +4,7 @@ import type {
   Module,
   Feature,
   Issue,
+  Channel,
   Discussion,
   DiscussionMessage,
   DirectMessage,
@@ -1152,6 +1153,18 @@ export class HAOpsApiClient {
       const response = await this.axios.post<DiscussionMessage>(
         `/api/projects/${projectSlug}/discussions/${discussionId}/messages`,
         data
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // Channels — project-scoped: /api/projects/{slug}/channels
+  async listChannels(projectSlug: string): Promise<Channel[]> {
+    try {
+      const response = await this.axios.get<Channel[]>(
+        `/api/projects/${projectSlug}/channels`
       );
       return response.data;
     } catch (error) {
