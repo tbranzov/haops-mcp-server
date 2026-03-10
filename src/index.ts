@@ -2166,6 +2166,381 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['articleSlug', 'imageBase64', 'filename', 'mimeType'],
         },
       },
+      // ===== Work Hierarchy — List & Get =====
+      {
+        name: 'haops_list_modules',
+        description: 'List modules in a HAOps project with optional filters. Returns module ID, title, status, priority, owner, and feature count. Use this to discover module UUIDs.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            status: { type: 'string', enum: ['backlog', 'in-progress', 'review', 'done', 'blocked', 'on-hold', 'cancelled'], description: 'Filter by status (optional)' },
+            priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Filter by priority (optional)' },
+            ownerId: { type: 'string', description: 'Filter by owner UUID (optional)' },
+            page: { type: 'number', description: 'Page number (default: 1)' },
+            limit: { type: 'number', description: 'Results per page (default: 25, max: 100)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_get_module',
+        description: 'Get full details for a single module including title, status, priority, notes, dates, owner, and child features.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            moduleId: { type: 'string', description: 'UUID of the module' },
+          },
+          required: ['projectSlug', 'moduleId'],
+        },
+      },
+      {
+        name: 'haops_list_features',
+        description: 'List features in a HAOps project with optional filters. Can filter by moduleId to get features for a specific module. Returns feature ID, title, status, priority, owner, module, and issue count.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            moduleId: { type: 'string', description: 'Filter by parent module UUID (optional)' },
+            status: { type: 'string', enum: ['backlog', 'in-progress', 'review', 'done', 'blocked', 'on-hold', 'cancelled'], description: 'Filter by status (optional)' },
+            priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Filter by priority (optional)' },
+            page: { type: 'number', description: 'Page number (default: 1)' },
+            limit: { type: 'number', description: 'Results per page (default: 25, max: 100)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_get_feature',
+        description: 'Get full details for a single feature including title, status, priority, notes, dates, owner, parent module, and child issues.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            featureId: { type: 'string', description: 'UUID of the feature' },
+          },
+          required: ['projectSlug', 'featureId'],
+        },
+      },
+      {
+        name: 'haops_list_issues',
+        description: 'List issues in a HAOps project with optional filters. Can filter by featureId, type, status, priority, and assignee. Returns issue ID, title, status, priority, type, assignee, feature, and dates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            featureId: { type: 'string', description: 'Filter by parent feature UUID (optional)' },
+            status: { type: 'string', enum: ['backlog', 'in-progress', 'review', 'done', 'blocked', 'on-hold', 'cancelled'], description: 'Filter by status (optional)' },
+            priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Filter by priority (optional)' },
+            type: { type: 'string', enum: ['feature', 'bug', 'task', 'improvement', 'documentation'], description: 'Filter by issue type (optional)' },
+            assignedTo: { type: 'string', description: 'Filter by assignee UUID (optional)' },
+            page: { type: 'number', description: 'Page number (default: 1)' },
+            limit: { type: 'number', description: 'Results per page (default: 25, max: 100)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_get_issue',
+        description: 'Get full details for a single issue including title, type, status, priority, notes, points, dates, assignee, and parent feature.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            issueId: { type: 'string', description: 'UUID of the issue' },
+          },
+          required: ['projectSlug', 'issueId'],
+        },
+      },
+      // ===== Project Tree =====
+      {
+        name: 'haops_get_project_tree',
+        description: 'Returns the COMPLETE work hierarchy for a project in flat arrays (modules, features, issues). Use this for a quick project overview instead of calling list_modules + list_features + list_issues separately.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      // ===== Teamwork Views =====
+      {
+        name: 'haops_get_structured_view',
+        description: 'Get a structured (nested) view of the project work hierarchy with optional filters. Returns Module→Feature→Issue tree, pre-organized for display.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            type: { type: 'string', enum: ['all', 'modules', 'features', 'issues'], description: 'Entity type filter (default: all)' },
+            assignee: { type: 'string', description: 'Filter by assignee UUID, or "all" (default: all)' },
+            status: { type: 'string', description: 'Filter by status value, or "all" (default: all)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_get_kanban',
+        description: 'Get a kanban board view of project work items grouped by status columns (backlog, in-progress, review, done, blocked, on-hold, cancelled). Toggle entity types with boolean flags.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            modules: { type: 'string', enum: ['true', 'false'], description: 'Include modules (default: true)' },
+            features: { type: 'string', enum: ['true', 'false'], description: 'Include features (default: true)' },
+            issues: { type: 'string', enum: ['true', 'false'], description: 'Include issues (default: true)' },
+            assignee: { type: 'string', description: 'Filter by assignee UUID, or "all" (default: all)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      // ===== Notifications =====
+      {
+        name: 'haops_list_notifications',
+        description: 'List notifications for the authenticated user/agent. Returns paginated notifications with unread count.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            page: { type: 'number', description: 'Page number (default: 1)' },
+            limit: { type: 'number', description: 'Results per page (default: 20)' },
+          },
+          required: [],
+        },
+      },
+      {
+        name: 'haops_mark_notification_read',
+        description: 'Mark a specific notification as read.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            notificationId: { type: 'string', description: 'UUID of the notification to mark as read' },
+          },
+          required: ['notificationId'],
+        },
+      },
+      // ===== Search & Code Review =====
+      {
+        name: 'haops_search_discussion',
+        description: 'Search messages within a specific discussion thread. Returns matching messages for the given query.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            discussionId: { type: 'string', description: 'UUID of the discussion to search' },
+            query: { type: 'string', description: 'Search query string' },
+          },
+          required: ['projectSlug', 'discussionId', 'query'],
+        },
+      },
+      {
+        name: 'haops_git_commit_diff',
+        description: 'Get the diff output for a specific git commit. Essential for code review — shows exactly what changed in a commit.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            sha: { type: 'string', description: 'Git commit SHA' },
+            repositoryName: { type: 'string', description: 'Repository name for multi-repo projects (optional)' },
+          },
+          required: ['projectSlug', 'sha'],
+        },
+      },
+      // ===== Channel Management =====
+      {
+        name: 'haops_create_channel',
+        description: 'Create a new channel in a HAOps project.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            name: { type: 'string', description: 'Channel name' },
+            description: { type: 'string', description: 'Channel description (optional)' },
+            type: { type: 'string', enum: ['general', 'announcements', 'dev', 'custom'], description: 'Channel type (optional, default: custom)' },
+          },
+          required: ['projectSlug', 'name'],
+        },
+      },
+      {
+        name: 'haops_update_channel',
+        description: 'Update an existing channel in a HAOps project.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            channelId: { type: 'string', description: 'UUID of the channel to update' },
+            name: { type: 'string', description: 'New channel name (optional)' },
+            description: { type: 'string', description: 'New channel description (optional)' },
+          },
+          required: ['projectSlug', 'channelId'],
+        },
+      },
+      {
+        name: 'haops_delete_channel',
+        description: 'Delete a channel from a HAOps project. This will also delete all discussions in the channel.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            channelId: { type: 'string', description: 'UUID of the channel to delete' },
+          },
+          required: ['projectSlug', 'channelId'],
+        },
+      },
+      // ===== Message Actions =====
+      {
+        name: 'haops_react_to_message',
+        description: 'Add or toggle an emoji reaction on a discussion message.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            discussionId: { type: 'string', description: 'UUID of the discussion' },
+            messageId: { type: 'string', description: 'UUID of the message to react to' },
+            emoji: { type: 'string', description: 'Emoji to react with (e.g. "👍", "🎉")' },
+          },
+          required: ['projectSlug', 'discussionId', 'messageId', 'emoji'],
+        },
+      },
+      {
+        name: 'haops_pin_message',
+        description: 'Pin or unpin a discussion message.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            discussionId: { type: 'string', description: 'UUID of the discussion' },
+            messageId: { type: 'string', description: 'UUID of the message to pin/unpin' },
+            pinned: { type: 'boolean', description: 'true to pin, false to unpin' },
+          },
+          required: ['projectSlug', 'discussionId', 'messageId', 'pinned'],
+        },
+      },
+      // ===== Merge Request Lifecycle =====
+      {
+        name: 'haops_close_merge_request',
+        description: 'Close a merge request without merging. Sets status to "closed".',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            mergeRequestId: { type: 'string', description: 'UUID of the merge request to close' },
+          },
+          required: ['projectSlug', 'mergeRequestId'],
+        },
+      },
+      {
+        name: 'haops_reopen_merge_request',
+        description: 'Reopen a previously closed merge request. Sets status back to "open".',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            mergeRequestId: { type: 'string', description: 'UUID of the merge request to reopen' },
+          },
+          required: ['projectSlug', 'mergeRequestId'],
+        },
+      },
+      // ===== Doc Builder Management =====
+      {
+        name: 'haops_list_doc_sections',
+        description: 'List all sections in a documentation artifact. Returns section hierarchy with titles, slugs, and order.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            artifactSlug: { type: 'string', description: 'The doc artifact slug' },
+          },
+          required: ['projectSlug', 'artifactSlug'],
+        },
+      },
+      {
+        name: 'haops_delete_doc_section',
+        description: 'Delete a section from a documentation artifact.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            artifactSlug: { type: 'string', description: 'The doc artifact slug' },
+            sectionSlug: { type: 'string', description: 'The section slug to delete' },
+          },
+          required: ['projectSlug', 'artifactSlug', 'sectionSlug'],
+        },
+      },
+      {
+        name: 'haops_delete_doc_artifact',
+        description: 'Delete a documentation artifact and all its sections.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            artifactSlug: { type: 'string', description: 'The doc artifact slug to delete' },
+          },
+          required: ['projectSlug', 'artifactSlug'],
+        },
+      },
+      {
+        name: 'haops_generate_changelog',
+        description: 'Generate a changelog from audit logs for a project. Returns structured changelog content.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      // ===== Help Center Extras =====
+      {
+        name: 'haops_search_help',
+        description: 'Search help articles by keyword. Returns matching articles with titles and snippets.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Search query string' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'haops_delete_help_section',
+        description: 'Delete a help center section and all its articles. Admin-only.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sectionSlug: { type: 'string', description: 'The help section slug to delete' },
+          },
+          required: ['sectionSlug'],
+        },
+      },
+      {
+        name: 'haops_delete_help_article',
+        description: 'Delete a help article. Admin-only.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            articleSlug: { type: 'string', description: 'The help article slug to delete' },
+          },
+          required: ['articleSlug'],
+        },
+      },
+      // ===== Repository Management =====
+      {
+        name: 'haops_manage_repositories',
+        description: 'Manage Git repositories for a HAOps project (list, get, create, update, delete). HAOps supports multiple repositories per project.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            action: { type: 'string', enum: ['list', 'get', 'create', 'update', 'delete'], description: 'Action to perform' },
+            repositoryId: { type: 'string', description: 'Repository UUID (required for get, update, delete)' },
+            name: { type: 'string', description: 'Repository name (required for create, optional for update)' },
+            description: { type: 'string', description: 'Repository description (optional for create/update)' },
+            defaultBranch: { type: 'string', description: 'Default branch name (optional for create/update)' },
+          },
+          required: ['projectSlug', 'action'],
+        },
+      },
     ],
   };
 });
@@ -4578,6 +4953,595 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error uploading help image: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Work Hierarchy — List & Get =====
+
+  if (name === 'haops_list_modules') {
+    try {
+      const { projectSlug, status, priority, ownerId, page, limit } = args as {
+        projectSlug: string;
+        status?: string;
+        priority?: string;
+        ownerId?: string;
+        page?: number;
+        limit?: number;
+      };
+
+      const effectiveLimit = Math.min(limit || 25, 100);
+      const offset = page && page > 1 ? (page - 1) * effectiveLimit : undefined;
+      const result = await apiClient.listModulesWithMeta(projectSlug, {
+        status, priority, ownerId, limit: effectiveLimit, offset,
+      });
+
+      const modules = result.data || [];
+      if (modules.length === 0) {
+        return { content: [{ type: 'text', text: 'No modules found matching filters.' }] };
+      }
+
+      const lines = modules.map((m: any) => {
+        const owner = m.owner ? m.owner.name || 'Unknown' : 'Unassigned';
+        return `- [${m.status}] ${m.title} (${m.priority}) — Owner: ${owner}\n  ID: ${m.id}`;
+      });
+
+      const header = `${result.total} module(s) found (page ${page || 1}, ${effectiveLimit}/page):`;
+      return { content: [{ type: 'text', text: `${header}\n\n${lines.join('\n')}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing modules: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_module') {
+    try {
+      const { moduleId } = args as { moduleId: string };
+      const mod = await apiClient.getModule(moduleId);
+      return { content: [{ type: 'text', text: JSON.stringify(mod, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting module: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_features') {
+    try {
+      const { projectSlug, moduleId, status, priority, page, limit } = args as {
+        projectSlug: string;
+        moduleId?: string;
+        status?: string;
+        priority?: string;
+        page?: number;
+        limit?: number;
+      };
+
+      const effectiveLimit = Math.min(limit || 25, 100);
+
+      if (moduleId) {
+        // Direct query — single module's features via URL query params
+        const qs = new URLSearchParams();
+        qs.set('moduleId', moduleId);
+        qs.set('limit', String(effectiveLimit));
+        if (status) qs.set('status', status);
+        if (priority) qs.set('priority', priority);
+        if (page && page > 1) qs.set('page', String(page));
+        const result = await apiClient.request('GET', `/api/features?${qs.toString()}`) as Record<string, unknown>;
+        const features = (result.data || []) as Array<Record<string, unknown>>;
+
+        if (features.length === 0) {
+          return { content: [{ type: 'text', text: 'No features found matching filters.' }] };
+        }
+
+        const lines = features.map((f: Record<string, unknown>) => {
+          const owner = f.owner ? (f.owner as Record<string, unknown>).name || 'Unknown' : 'Unassigned';
+          return `- [${f.status}] ${f.title} (${f.priority}) — Owner: ${owner}\n  ID: ${f.id}`;
+        });
+
+        return { content: [{ type: 'text', text: `${result.total || features.length} feature(s):\n\n${lines.join('\n')}` }] };
+      }
+
+      // No moduleId — list all features for the project
+      const features = await apiClient.listFeatures(projectSlug, { status, priority, limit: effectiveLimit });
+
+      if (features.length === 0) {
+        return { content: [{ type: 'text', text: 'No features found matching filters.' }] };
+      }
+
+      const lines = features.map((f: any) => {
+        const owner = f.owner ? f.owner.name || 'Unknown' : 'Unassigned';
+        return `- [${f.status}] ${f.title} (${f.priority}) — Owner: ${owner}\n  ID: ${f.id}`;
+      });
+
+      return { content: [{ type: 'text', text: `${features.length} feature(s):\n\n${lines.join('\n')}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing features: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_feature') {
+    try {
+      const { featureId } = args as { featureId: string };
+      const feature = await apiClient.getFeature(featureId);
+      return { content: [{ type: 'text', text: JSON.stringify(feature, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting feature: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_issues') {
+    try {
+      const { projectSlug, featureId, status, priority, type, assignedTo, page, limit } = args as {
+        projectSlug: string;
+        featureId?: string;
+        status?: string;
+        priority?: string;
+        type?: string;
+        assignedTo?: string;
+        page?: number;
+        limit?: number;
+      };
+
+      const effectiveLimit = Math.min(limit || 25, 100);
+
+      if (featureId) {
+        // Direct query — single feature's issues
+        const params = new URLSearchParams();
+        params.set('featureId', featureId);
+        params.set('limit', String(effectiveLimit));
+        if (status) params.set('status', status);
+        if (priority) params.set('priority', priority);
+        if (type) params.set('type', type);
+        if (assignedTo) params.set('assignedTo', assignedTo);
+        if (page && page > 1) params.set('page', String(page));
+
+        const result = await apiClient.request('GET', `/api/issues?${params.toString()}`) as Record<string, unknown>;
+        const issues = (result.data || []) as Array<Record<string, unknown>>;
+
+        if (issues.length === 0) {
+          return { content: [{ type: 'text', text: 'No issues found matching filters.' }] };
+        }
+
+        const lines = issues.map((i: Record<string, unknown>) => {
+          const assignee = i.assignee ? (i.assignee as Record<string, unknown>).name || 'Unknown' : 'Unassigned';
+          return `- [${i.status}] ${i.title} (${i.priority}, ${i.type}) — Assignee: ${assignee}\n  ID: ${i.id}`;
+        });
+
+        return { content: [{ type: 'text', text: `${result.total || issues.length} issue(s):\n\n${lines.join('\n')}` }] };
+      }
+
+      // No featureId — list all issues for the project
+      const issues = await apiClient.listIssues(projectSlug, { status, priority, type, assignedTo, limit: effectiveLimit });
+
+      if (issues.length === 0) {
+        return { content: [{ type: 'text', text: 'No issues found matching filters.' }] };
+      }
+
+      const lines = issues.map((i: any) => {
+        const assignee = i.assignee ? i.assignee.name || 'Unknown' : 'Unassigned';
+        return `- [${i.status}] ${i.title} (${i.priority}, ${i.type}) — Assignee: ${assignee}\n  ID: ${i.id}`;
+      });
+
+      return { content: [{ type: 'text', text: `${issues.length} issue(s):\n\n${lines.join('\n')}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing issues: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_issue') {
+    try {
+      const { issueId } = args as { issueId: string };
+      const issue = await apiClient.getIssue(issueId);
+      return { content: [{ type: 'text', text: JSON.stringify(issue, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting issue: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Project Tree =====
+
+  if (name === 'haops_get_project_tree') {
+    try {
+      const { projectSlug } = args as { projectSlug: string };
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/tree`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting project tree: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Teamwork Views =====
+
+  if (name === 'haops_get_structured_view') {
+    try {
+      const { projectSlug, type, assignee, status } = args as {
+        projectSlug: string;
+        type?: string;
+        assignee?: string;
+        status?: string;
+      };
+
+      const params = new URLSearchParams();
+      if (type) params.set('type', type);
+      if (assignee) params.set('assignee', assignee);
+      if (status) params.set('status', status);
+      const qs = params.toString();
+
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/teamwork/structured${qs ? `?${qs}` : ''}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting structured view: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_kanban') {
+    try {
+      const { projectSlug, modules, features, issues, assignee } = args as {
+        projectSlug: string;
+        modules?: string;
+        features?: string;
+        issues?: string;
+        assignee?: string;
+      };
+
+      const params = new URLSearchParams();
+      if (modules) params.set('modules', modules);
+      if (features) params.set('features', features);
+      if (issues) params.set('issues', issues);
+      if (assignee) params.set('assignee', assignee);
+      const qs = params.toString();
+
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/teamwork/kanban${qs ? `?${qs}` : ''}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting kanban view: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Notifications =====
+
+  if (name === 'haops_list_notifications') {
+    try {
+      const { page, limit } = args as { page?: number; limit?: number };
+      const params = new URLSearchParams();
+      if (page) params.set('page', String(page));
+      if (limit) params.set('limit', String(limit));
+      const qs = params.toString();
+
+      const result = await apiClient.request('GET', `/api/notifications${qs ? `?${qs}` : ''}`) as Record<string, unknown>;
+      const notifications = (result.notifications || result.data || []) as Array<Record<string, unknown>>;
+
+      if (notifications.length === 0) {
+        return { content: [{ type: 'text', text: `No notifications. Unread count: ${result.unreadCount || 0}` }] };
+      }
+
+      const lines = notifications.map((n: Record<string, unknown>) => {
+        const read = n.readAt ? '✓' : '•';
+        const time = n.createdAt ? formatRelativeDate(n.createdAt as string) : '';
+        return `${read} [${n.type}] ${n.title || n.message} (${time})\n  ID: ${n.id}`;
+      });
+
+      const header = `Notifications (unread: ${result.unreadCount || 0}):`;
+      return { content: [{ type: 'text', text: `${header}\n\n${lines.join('\n')}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing notifications: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_mark_notification_read') {
+    try {
+      const { notificationId } = args as { notificationId: string };
+      await apiClient.request('PUT', `/api/notifications/${notificationId}/read`);
+      return { content: [{ type: 'text', text: `Notification ${notificationId} marked as read.` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error marking notification read: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Search & Code Review =====
+
+  if (name === 'haops_search_discussion') {
+    try {
+      const { projectSlug, discussionId, query } = args as {
+        projectSlug: string;
+        discussionId: string;
+        query: string;
+      };
+
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/discussions/${discussionId}/search?q=${encodeURIComponent(query)}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error searching discussion: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_git_commit_diff') {
+    try {
+      const { projectSlug, sha, repositoryName } = args as {
+        projectSlug: string;
+        sha: string;
+        repositoryName?: string;
+      };
+
+      const params = repositoryName ? `?repositoryName=${encodeURIComponent(repositoryName)}` : '';
+      const result = await apiClient.requestText('GET', `/api/projects/${projectSlug}/git/diff/${sha}${params}`);
+      return { content: [{ type: 'text', text: result }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting commit diff: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Channel Management =====
+
+  if (name === 'haops_create_channel') {
+    try {
+      const { projectSlug, name: channelName, description, type } = args as {
+        projectSlug: string;
+        name: string;
+        description?: string;
+        type?: string;
+      };
+
+      const body: Record<string, unknown> = { name: channelName };
+      if (description) body.description = description;
+      if (type) body.type = type;
+
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/channels`, body);
+      return { content: [{ type: 'text', text: `Channel created:\n${JSON.stringify(result, null, 2)}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error creating channel: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_update_channel') {
+    try {
+      const { projectSlug, channelId, name: channelName, description } = args as {
+        projectSlug: string;
+        channelId: string;
+        name?: string;
+        description?: string;
+      };
+
+      const body: Record<string, unknown> = {};
+      if (channelName) body.name = channelName;
+      if (description !== undefined) body.description = description;
+
+      const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/channels/${channelId}`, body);
+      return { content: [{ type: 'text', text: `Channel updated:\n${JSON.stringify(result, null, 2)}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error updating channel: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_delete_channel') {
+    try {
+      const { projectSlug, channelId } = args as { projectSlug: string; channelId: string };
+      await apiClient.request('DELETE', `/api/projects/${projectSlug}/channels/${channelId}`);
+      return { content: [{ type: 'text', text: `Channel ${channelId} deleted.` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error deleting channel: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Message Actions =====
+
+  if (name === 'haops_react_to_message') {
+    try {
+      const { projectSlug, discussionId, messageId, emoji } = args as {
+        projectSlug: string;
+        discussionId: string;
+        messageId: string;
+        emoji: string;
+      };
+
+      await apiClient.request('PUT', `/api/projects/${projectSlug}/discussions/${discussionId}/messages/${messageId}/reactions`, { emoji });
+      return { content: [{ type: 'text', text: `Reaction ${emoji} added/toggled on message ${messageId}.` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error reacting to message: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_pin_message') {
+    try {
+      const { projectSlug, discussionId, messageId, pinned } = args as {
+        projectSlug: string;
+        discussionId: string;
+        messageId: string;
+        pinned: boolean;
+      };
+
+      await apiClient.request('PUT', `/api/projects/${projectSlug}/discussions/${discussionId}/messages/${messageId}/pin`, { pinned });
+      return { content: [{ type: 'text', text: `Message ${messageId} ${pinned ? 'pinned' : 'unpinned'}.` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error pinning message: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Merge Request Lifecycle =====
+
+  if (name === 'haops_close_merge_request') {
+    try {
+      const { projectSlug, mergeRequestId } = args as { projectSlug: string; mergeRequestId: string };
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/git/merge-requests/${mergeRequestId}/close`);
+      return { content: [{ type: 'text', text: `Merge request closed:\n${JSON.stringify(result, null, 2)}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error closing merge request: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_reopen_merge_request') {
+    try {
+      const { projectSlug, mergeRequestId } = args as { projectSlug: string; mergeRequestId: string };
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/git/merge-requests/${mergeRequestId}/reopen`);
+      return { content: [{ type: 'text', text: `Merge request reopened:\n${JSON.stringify(result, null, 2)}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error reopening merge request: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Doc Builder Management =====
+
+  if (name === 'haops_list_doc_sections') {
+    try {
+      const { projectSlug, artifactSlug } = args as { projectSlug: string; artifactSlug: string };
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/docs/${artifactSlug}/sections`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing doc sections: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_delete_doc_section') {
+    try {
+      const { projectSlug, artifactSlug, sectionSlug } = args as {
+        projectSlug: string;
+        artifactSlug: string;
+        sectionSlug: string;
+      };
+      await apiClient.request('DELETE', `/api/projects/${projectSlug}/docs/${artifactSlug}/sections/${sectionSlug}`);
+      return { content: [{ type: 'text', text: `Doc section "${sectionSlug}" deleted from artifact "${artifactSlug}".` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error deleting doc section: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_delete_doc_artifact') {
+    try {
+      const { projectSlug, artifactSlug } = args as { projectSlug: string; artifactSlug: string };
+      await apiClient.request('DELETE', `/api/projects/${projectSlug}/docs/${artifactSlug}`);
+      return { content: [{ type: 'text', text: `Doc artifact "${artifactSlug}" deleted.` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error deleting doc artifact: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_generate_changelog') {
+    try {
+      const { projectSlug } = args as { projectSlug: string };
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/docs/changelog/generate`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error generating changelog: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Help Center Extras =====
+
+  if (name === 'haops_search_help') {
+    try {
+      const { query } = args as { query: string };
+      const result = await apiClient.request('GET', `/api/help/search?q=${encodeURIComponent(query)}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error searching help: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_delete_help_section') {
+    try {
+      const { sectionSlug } = args as { sectionSlug: string };
+      await apiClient.request('DELETE', `/api/help/sections/${sectionSlug}`);
+      return { content: [{ type: 'text', text: `Help section "${sectionSlug}" deleted.` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error deleting help section: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_delete_help_article') {
+    try {
+      const { articleSlug } = args as { articleSlug: string };
+      await apiClient.request('DELETE', `/api/help/articles/${articleSlug}`);
+      return { content: [{ type: 'text', text: `Help article "${articleSlug}" deleted.` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error deleting help article: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Repository Management =====
+
+  if (name === 'haops_manage_repositories') {
+    try {
+      const { projectSlug, action, repositoryId, name: repoName, description, defaultBranch } = args as {
+        projectSlug: string;
+        action: string;
+        repositoryId?: string;
+        name?: string;
+        description?: string;
+        defaultBranch?: string;
+      };
+
+      if (action === 'list') {
+        const result = await apiClient.request('GET', `/api/projects/${projectSlug}/repositories`);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (action === 'get') {
+        if (!repositoryId) {
+          return { content: [{ type: 'text', text: 'Error: repositoryId is required for get action' }], isError: true };
+        }
+        const result = await apiClient.request('GET', `/api/projects/${projectSlug}/repositories/${repositoryId}`);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (action === 'create') {
+        if (!repoName) {
+          return { content: [{ type: 'text', text: 'Error: name is required for create action' }], isError: true };
+        }
+        const body: Record<string, unknown> = { name: repoName };
+        if (description) body.description = description;
+        if (defaultBranch) body.defaultBranch = defaultBranch;
+        const result = await apiClient.request('POST', `/api/projects/${projectSlug}/repositories`, body);
+        return { content: [{ type: 'text', text: `Repository created:\n${JSON.stringify(result, null, 2)}` }] };
+      }
+
+      if (action === 'update') {
+        if (!repositoryId) {
+          return { content: [{ type: 'text', text: 'Error: repositoryId is required for update action' }], isError: true };
+        }
+        const body: Record<string, unknown> = {};
+        if (repoName) body.name = repoName;
+        if (description !== undefined) body.description = description;
+        if (defaultBranch) body.defaultBranch = defaultBranch;
+        const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/repositories/${repositoryId}`, body);
+        return { content: [{ type: 'text', text: `Repository updated:\n${JSON.stringify(result, null, 2)}` }] };
+      }
+
+      if (action === 'delete') {
+        if (!repositoryId) {
+          return { content: [{ type: 'text', text: 'Error: repositoryId is required for delete action' }], isError: true };
+        }
+        await apiClient.request('DELETE', `/api/projects/${projectSlug}/repositories/${repositoryId}`);
+        return { content: [{ type: 'text', text: `Repository ${repositoryId} deleted.` }] };
+      }
+
+      return { content: [{ type: 'text', text: `Unknown action: ${action}. Use list, get, create, update, or delete.` }], isError: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error managing repositories: ${message}` }], isError: true };
     }
   }
 
