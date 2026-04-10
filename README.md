@@ -120,7 +120,7 @@ MCP resources exposed by this server (with query filtering):
 
 ## Tools
 
-MCP tools provided by this server (19 total):
+MCP tools provided by this server (103 total). Key tools listed below — see `src/index.ts` for full list:
 
 ### Read Operations
 - `haops_list_projects()` - List all projects

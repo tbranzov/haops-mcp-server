@@ -1,6 +1,6 @@
 {
   "name": "haops-mcp-server",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Model Context Protocol server for HAOps (Human-Agent Operations) - enables Claude to manage projects, modules, features, and issues",
   "main": "dist/index.js",
   "type": "module",
@@ -12,6 +12,7 @@
     "test": "jest",
     "test:unit": "jest src/",
     "test:integration": "jest tests/integration/",
+    "test:contracts": "jest --config tests/contracts/jest.config.js",
     "test:all": "jest"
   },
   "keywords": [

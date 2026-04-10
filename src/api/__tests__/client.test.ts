@@ -78,14 +78,18 @@ describe('HAOpsApiClient', () => {
 
   describe('Modules', () => {
     it('should create module', async () => {
+      const mockProject = { id: 'project-uuid-1', slug: 'test-project', title: 'Test Project' };
       const mockModule = { id: '1', title: 'New Module' };
       const axiosInstance = mockCreate.mock.results[0].value;
+      // createModule calls resolveProjectId → getProject first, then posts
+      axiosInstance.get.mockResolvedValue({ data: mockProject });
       axiosInstance.post.mockResolvedValue({ data: mockModule });
 
       const data = { title: 'New Module', ownerId: 'user-1' };
       const result = await client.createModule('test-project', data);
 
-      expect(axiosInstance.post).toHaveBeenCalledWith('/api/projects/test-project/modules', data);
+      expect(axiosInstance.get).toHaveBeenCalledWith('/api/projects/test-project');
+      expect(axiosInstance.post).toHaveBeenCalledWith('/api/modules', { ...data, projectId: 'project-uuid-1' });
       expect(result).toEqual(mockModule);
     });
 
@@ -95,9 +99,9 @@ describe('HAOpsApiClient', () => {
       axiosInstance.put.mockResolvedValue({ data: mockModule });
 
       const data = { title: 'Updated Module' };
-      const result = await client.updateModule('test-project', 'module-1', data);
+      const result = await client.updateModule('module-1', data);
 
-      expect(axiosInstance.put).toHaveBeenCalledWith('/api/projects/test-project/modules/module-1', data);
+      expect(axiosInstance.put).toHaveBeenCalledWith('/api/modules/module-1', data);
       expect(result).toEqual(mockModule);
     });
   });

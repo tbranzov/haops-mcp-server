@@ -2541,6 +2541,115 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['projectSlug', 'action'],
         },
       },
+
+      // ===== Helpdesk Tools =====
+      {
+        name: 'haops_list_tickets',
+        description: 'List helpdesk support tickets for a project with optional filters. Returns paginated results.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            status: { type: 'string', enum: ['open', 'pending', 'in-progress', 'waiting-customer', 'resolved', 'closed'], description: 'Filter by ticket status' },
+            priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], description: 'Filter by priority' },
+            assignedTo: { type: 'string', description: 'Filter by assignee user UUID' },
+            category: { type: 'string', description: 'Filter by ticket category' },
+            search: { type: 'string', description: 'Search query (searches subject and description)' },
+            page: { type: 'number', description: 'Page number (default: 1)' },
+            limit: { type: 'number', description: 'Results per page (default: 20, max: 100)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_get_ticket',
+        description: 'Get a helpdesk ticket by ID, including full conversation timeline (inbound, outbound, internal messages).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            ticketId: { type: 'string', description: 'Ticket UUID' },
+          },
+          required: ['projectSlug', 'ticketId'],
+        },
+      },
+      {
+        name: 'haops_create_ticket',
+        description: 'Manually create a helpdesk ticket on behalf of a requester (e.g. from an agent, not via public form).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            subject: { type: 'string', description: 'Ticket subject / title' },
+            content: { type: 'string', description: 'Initial message content describing the issue (creates the first ticket message)' },
+            requesterEmail: { type: 'string', description: 'Email address of the requester (customer)' },
+            requesterName: { type: 'string', description: 'Display name of the requester' },
+            priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], description: 'Ticket priority (default: medium)' },
+            category: { type: 'string', description: 'Ticket category (must match project helpdesk categories)' },
+          },
+          required: ['projectSlug', 'subject', 'content', 'requesterEmail'],
+        },
+      },
+      {
+        name: 'haops_update_ticket',
+        description: 'Update helpdesk ticket fields (status, priority, category, assignee, tags). Used for triage and management.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            ticketId: { type: 'string', description: 'Ticket UUID' },
+            status: { type: 'string', enum: ['open', 'pending', 'in-progress', 'waiting-customer', 'resolved', 'closed'], description: 'New ticket status' },
+            priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], description: 'New priority level' },
+            category: { type: 'string', description: 'Ticket category' },
+            assignedToId: { type: 'string', description: 'Assignee user UUID' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Array of tag strings to set on the ticket' },
+            language: { type: 'string', enum: ['bg', 'en'], description: 'Ticket language for email templates (bg or en)' },
+          },
+          required: ['projectSlug', 'ticketId'],
+        },
+      },
+      {
+        name: 'haops_reply_ticket',
+        description: 'Send a reply or internal note on a helpdesk ticket. direction=outbound sends an email to the requester; direction=internal creates a private team note (not visible to customer).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            ticketId: { type: 'string', description: 'Ticket UUID' },
+            content: { type: 'string', description: 'Message content (plain text or markdown)' },
+            direction: { type: 'string', enum: ['outbound', 'internal'], description: 'outbound = email sent to requester; internal = private team note only' },
+          },
+          required: ['projectSlug', 'ticketId', 'content', 'direction'],
+        },
+      },
+      {
+        name: 'haops_claim_ticket',
+        description: 'Claim or unclaim a helpdesk ticket. Claiming marks it as in-progress and assigns takenBy fields.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            ticketId: { type: 'string', description: 'Ticket UUID' },
+            action: { type: 'string', enum: ['claim', 'unclaim'], description: 'Action to perform (default: claim)' },
+            force: { type: 'boolean', description: 'Force-claim even if already claimed by another user (PM+ only, default: false)' },
+          },
+          required: ['projectSlug', 'ticketId'],
+        },
+      },
+      {
+        name: 'haops_close_ticket',
+        description: 'Resolve or close a helpdesk ticket, optionally sending a final message to the requester. Sends resolution/closure email to requester if message is provided.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            ticketId: { type: 'string', description: 'Ticket UUID' },
+            status: { type: 'string', enum: ['resolved', 'closed'], description: 'resolved = fixed, waiting for confirmation; closed = fully closed' },
+            resolutionNote: { type: 'string', description: 'Optional resolution note included in the email sent to the requester when status is \'resolved\'.' },
+          },
+          required: ['projectSlug', 'ticketId', 'status'],
+        },
+      },
     ],
   };
 });
@@ -4320,7 +4429,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (suiteId) filters.suiteId = suiteId;
       if (entityType) filters.testableType = entityType;
       if (entityId) filters.testableId = entityId;
-      if (limit) filters.limit = limit;
+      if (limit !== undefined) filters.limit = limit;
 
       const tests = await apiClient.listTests(projectSlug, filters);
       return {
@@ -4344,7 +4453,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const filters: Record<string, unknown> = {};
       if (runner) filters.runner = runner;
       if (environment) filters.environment = environment;
-      if (limit) filters.limit = limit;
+      if (limit !== undefined) filters.limit = limit;
 
       const runs = await apiClient.listTestRuns(projectSlug, filters);
       return {
@@ -5210,8 +5319,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const { page, limit } = args as { page?: number; limit?: number };
       const params = new URLSearchParams();
-      if (page) params.set('page', String(page));
-      if (limit) params.set('limit', String(limit));
+      if (page !== undefined) params.set('page', String(page));
+      if (limit !== undefined) params.set('limit', String(limit));
       const qs = params.toString();
 
       const result = await apiClient.request('GET', `/api/notifications${qs ? `?${qs}` : ''}`) as Record<string, unknown>;
@@ -5542,6 +5651,153 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error managing repositories: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Helpdesk Tools =====
+
+  if (name === 'haops_list_tickets') {
+    try {
+      const { projectSlug, status, priority, assignedTo, category, search, page, limit } = args as {
+        projectSlug: string;
+        status?: string;
+        priority?: string;
+        assignedTo?: string;
+        category?: string;
+        search?: string;
+        page?: number;
+        limit?: number;
+      };
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      if (priority) params.set('priority', priority);
+      if (assignedTo) params.set('assignedTo', assignedTo);
+      if (category) params.set('category', category);
+      if (search) params.set('search', search);
+      if (page !== undefined) params.set('page', String(page));
+      if (limit !== undefined) params.set('limit', String(limit));
+      const query = params.toString();
+      const url = `/api/projects/${projectSlug}/helpdesk/tickets${query ? `?${query}` : ''}`;
+      const result = await apiClient.request('GET', url);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing tickets: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_ticket') {
+    try {
+      const { projectSlug, ticketId } = args as { projectSlug: string; ticketId: string };
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/helpdesk/tickets/${ticketId}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting ticket: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_create_ticket') {
+    try {
+      const { projectSlug, subject, content, requesterEmail, requesterName, priority, category } = args as {
+        projectSlug: string;
+        subject: string;
+        content: string;
+        requesterEmail: string;
+        requesterName?: string;
+        priority?: string;
+        category?: string;
+      };
+      const body: Record<string, unknown> = { subject, content, requesterEmail };
+      if (requesterName !== undefined) body.requesterName = requesterName;
+      if (priority !== undefined) body.priority = priority;
+      if (category !== undefined) body.category = category;
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/helpdesk/tickets`, body);
+      return { content: [{ type: 'text', text: `Ticket created:\n${JSON.stringify(result, null, 2)}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error creating ticket: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_update_ticket') {
+    try {
+      const { projectSlug, ticketId, status, priority, category, assignedToId, tags, language } = args as {
+        projectSlug: string;
+        ticketId: string;
+        status?: string;
+        priority?: string;
+        category?: string;
+        assignedToId?: string;
+        tags?: string[];
+        language?: string;
+      };
+      const body: Record<string, unknown> = {};
+      if (status !== undefined) body.status = status;
+      if (priority !== undefined) body.priority = priority;
+      if (category !== undefined) body.category = category;
+      if (assignedToId !== undefined) body.assignedToId = assignedToId;
+      if (tags !== undefined) body.tags = tags;
+      if (language !== undefined) body.language = language;
+      const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/helpdesk/tickets/${ticketId}`, body);
+      return { content: [{ type: 'text', text: `Ticket updated:\n${JSON.stringify(result, null, 2)}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error updating ticket: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_reply_ticket') {
+    try {
+      const { projectSlug, ticketId, content, direction } = args as {
+        projectSlug: string;
+        ticketId: string;
+        content: string;
+        direction: 'outbound' | 'internal';
+      };
+      const body: Record<string, unknown> = { content, direction };
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/helpdesk/tickets/${ticketId}/messages`, body);
+      return { content: [{ type: 'text', text: `Message sent (${direction}):\n${JSON.stringify(result, null, 2)}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error replying to ticket: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_claim_ticket') {
+    try {
+      const { projectSlug, ticketId, action, force } = args as {
+        projectSlug: string;
+        ticketId: string;
+        action?: 'claim' | 'unclaim';
+        force?: boolean;
+      };
+      const body: Record<string, unknown> = {};
+      if (action !== undefined) body.action = action;
+      if (force !== undefined) body.force = force;
+      const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/helpdesk/tickets/${ticketId}/claim`, body);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error claiming ticket: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_close_ticket') {
+    try {
+      const { projectSlug, ticketId, status, resolutionNote } = args as {
+        projectSlug: string;
+        ticketId: string;
+        status: 'resolved' | 'closed';
+        resolutionNote?: string;
+      };
+      const body: Record<string, unknown> = { status };
+      if (resolutionNote !== undefined) body.resolutionNote = resolutionNote;
+      const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/helpdesk/tickets/${ticketId}`, body);
+      return { content: [{ type: 'text', text: `Ticket ${status}:\n${JSON.stringify(result, null, 2)}` }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error closing ticket: ${message}` }], isError: true };
     }
   }
 
