@@ -2280,21 +2280,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['projectSlug'],
         },
       },
-      {
-        name: 'haops_get_kanban',
-        description: 'Get a kanban board view of project work items grouped by status columns (backlog, in-progress, review, done, blocked, on-hold, cancelled). Toggle entity types with boolean flags.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
-            modules: { type: 'string', enum: ['true', 'false'], description: 'Include modules (default: true)' },
-            features: { type: 'string', enum: ['true', 'false'], description: 'Include features (default: true)' },
-            issues: { type: 'string', enum: ['true', 'false'], description: 'Include issues (default: true)' },
-            assignee: { type: 'string', description: 'Filter by assignee UUID, or "all" (default: all)' },
-          },
-          required: ['projectSlug'],
-        },
-      },
       // ===== Notifications =====
       {
         name: 'haops_list_notifications',
@@ -5285,31 +5270,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error getting structured view: ${message}` }], isError: true };
-    }
-  }
-
-  if (name === 'haops_get_kanban') {
-    try {
-      const { projectSlug, modules, features, issues, assignee } = args as {
-        projectSlug: string;
-        modules?: string;
-        features?: string;
-        issues?: string;
-        assignee?: string;
-      };
-
-      const params = new URLSearchParams();
-      if (modules) params.set('modules', modules);
-      if (features) params.set('features', features);
-      if (issues) params.set('issues', issues);
-      if (assignee) params.set('assignee', assignee);
-      const qs = params.toString();
-
-      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/teamwork/kanban${qs ? `?${qs}` : ''}`);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return { content: [{ type: 'text', text: `Error getting kanban view: ${message}` }], isError: true };
     }
   }
 

@@ -8,7 +8,7 @@
  *   list_modules, get_module, create_module, update_module, delete_module
  *   list_features, get_feature, create_feature, delete_feature
  *   list_issues, get_issue, create_issue, delete_issue
- *   get_project_tree, get_structured_view, get_kanban
+ *   get_project_tree, get_structured_view
  *
  * Requirements: HAOps running at HAOPS_API_URL with valid HAOPS_API_KEY.
  * If unavailable, all tests skip gracefully.
@@ -257,11 +257,3 @@ describe('get_structured_view — GET /api/projects/[slug]/teamwork/structured',
   });
 });
 
-describe('get_kanban — GET /api/projects/[slug]/teamwork/kanban', () => {
-  it('returns 200 with kanban shape', async () => {
-    if (!haopsAvailable) return;
-    const { status, body } = await haopsGet(`/api/projects/${HAOPS_PROJECT_SLUG}/teamwork/kanban`);
-    expect(status).toBe(200);
-    validateAndSnapshotShape(body, 'get_kanban response');
-  });
-});
