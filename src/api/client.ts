@@ -33,6 +33,27 @@ interface PaginatedResponse<T> {
   limit: number;
 }
 
+/**
+ * HAOps PUT /api/{modules|features|issues}/[id] envelope.
+ * All three routes return { success, message, entity } — not the raw entity.
+ * See haops commit 5d263eb for the route contract.
+ */
+interface EntityUpdateResponse<T> {
+  success: boolean;
+  message: string;
+  entity: T;
+}
+
+/**
+ * HAOps POST /api/{module|feature|issue}/[id]/claim envelope.
+ * Claim routes return { claimed: true, <entityKey>: T } where entityKey is
+ * "module" | "feature" | "issue". See haops commit 3628dddd.
+ */
+type ClaimResponse<K extends string, T> = {
+  claimed: boolean;
+  message?: string;
+} & { [P in K]: T };
+
 export interface ListFilters {
   status?: string;
   priority?: string;
@@ -213,8 +234,11 @@ export class HAOpsApiClient {
 
   async updateModule(moduleId: string, data: UpdateModuleRequest): Promise<Module> {
     try {
-      const response = await this.axios.put<Module>(`/api/modules/${moduleId}`, data);
-      return response.data;
+      const response = await this.axios.put<EntityUpdateResponse<Module>>(
+        `/api/modules/${moduleId}`,
+        data
+      );
+      return response.data.entity;
     } catch (error) {
       return this.handleError(error);
     }
@@ -280,8 +304,11 @@ export class HAOpsApiClient {
 
   async updateFeature(featureId: string, data: UpdateFeatureRequest): Promise<Feature> {
     try {
-      const response = await this.axios.put<Feature>(`/api/features/${featureId}`, data);
-      return response.data;
+      const response = await this.axios.put<EntityUpdateResponse<Feature>>(
+        `/api/features/${featureId}`,
+        data
+      );
+      return response.data.entity;
     } catch (error) {
       return this.handleError(error);
     }
@@ -349,8 +376,11 @@ export class HAOpsApiClient {
 
   async updateIssue(issueId: string, data: UpdateIssueRequest): Promise<Issue> {
     try {
-      const response = await this.axios.put<Issue>(`/api/issues/${issueId}`, data);
-      return response.data;
+      const response = await this.axios.put<EntityUpdateResponse<Issue>>(
+        `/api/issues/${issueId}`,
+        data
+      );
+      return response.data.entity;
     } catch (error) {
       return this.handleError(error);
     }
@@ -407,15 +437,16 @@ export class HAOpsApiClient {
 
         // Try to claim anyway - server will check if it's the same API key
         try {
-          const response = await this.axios.put<Issue>(`/api/issues/${issueId}`, {
-            status: 'in-progress',
-          });
+          const response = await this.axios.put<EntityUpdateResponse<Issue>>(
+            `/api/issues/${issueId}`,
+            { status: 'in-progress' }
+          );
 
           return {
             success: true,
             message: 'Already claimed by you',
             canResume: true,
-            issue: response.data,
+            issue: response.data.entity,
           };
         } catch (error) {
           // 409 means another agent owns it
@@ -444,14 +475,15 @@ export class HAOpsApiClient {
 
       // Claim the issue (PUT status=in-progress)
       try {
-        const response = await this.axios.put<Issue>(`/api/issues/${issueId}`, {
-          status: 'in-progress',
-        });
+        const response = await this.axios.put<EntityUpdateResponse<Issue>>(
+          `/api/issues/${issueId}`,
+          { status: 'in-progress' }
+        );
 
         return {
           success: true,
           message: 'Issue claimed successfully',
-          issue: response.data,
+          issue: response.data.entity,
         };
       } catch (error) {
         // Race condition - another agent claimed it between GET and PUT
@@ -527,13 +559,13 @@ export class HAOpsApiClient {
         }
 
         try {
-          const response = await this.axios.post<Feature>(
+          const response = await this.axios.post<ClaimResponse<'feature', Feature>>(
             `/api/features/${featureId}/claim`
           );
           return {
             success: true,
             message: 'Feature claimed successfully',
-            feature: response.data,
+            feature: response.data.feature,
           };
         } catch (error) {
           if (axios.isAxiosError(error) && error.response?.status === 409) {
@@ -559,13 +591,13 @@ export class HAOpsApiClient {
       }
 
       try {
-        const response = await this.axios.post<Feature>(
+        const response = await this.axios.post<ClaimResponse<'feature', Feature>>(
           `/api/features/${featureId}/claim`
         );
         return {
           success: true,
           message: 'Feature claimed successfully',
-          feature: response.data,
+          feature: response.data.feature,
         };
       } catch (error) {
         if (axios.isAxiosError(error) && error.response?.status === 409) {
@@ -630,13 +662,13 @@ export class HAOpsApiClient {
         }
 
         try {
-          const response = await this.axios.post<Module>(
+          const response = await this.axios.post<ClaimResponse<'module', Module>>(
             `/api/modules/${moduleId}/claim`
           );
           return {
             success: true,
             message: 'Module claimed successfully',
-            module: response.data,
+            module: response.data.module,
           };
         } catch (error) {
           if (axios.isAxiosError(error) && error.response?.status === 409) {
@@ -662,13 +694,13 @@ export class HAOpsApiClient {
       }
 
       try {
-        const response = await this.axios.post<Module>(
+        const response = await this.axios.post<ClaimResponse<'module', Module>>(
           `/api/modules/${moduleId}/claim`
         );
         return {
           success: true,
           message: 'Module claimed successfully',
-          module: response.data,
+          module: response.data.module,
         };
       } catch (error) {
         if (axios.isAxiosError(error) && error.response?.status === 409) {
