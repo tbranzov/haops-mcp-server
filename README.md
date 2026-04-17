@@ -95,6 +95,91 @@ npm start
 
 The server will listen on stdio for MCP protocol messages.
 
+## HTTP Mode (Shared Daemon)
+
+In addition to the default stdio transport, the server can run as a long-lived
+HTTP daemon. One daemon process can serve multiple concurrent Claude clients
+(CLI, VS Code extension, desktop app). Because every session shares the same
+HAOps API client singleton, this saves hundreds of MB of RAM compared to
+launching one stdio subprocess per Claude session.
+
+### Starting the daemon
+
+```bash
+# Default port (3100)
+HAOPS_API_URL=http://localhost:3000 HAOPS_API_KEY=your-key \
+  node dist/index.js --http
+
+# Custom port
+HAOPS_API_URL=http://localhost:3000 HAOPS_API_KEY=your-key \
+  node dist/index.js --http --port 3199
+```
+
+The daemon binds `127.0.0.1` only and validates the `Host` header on every
+request (DNS rebinding protection). It is **not** suitable for exposure
+beyond localhost — treat it as a developer-machine convenience.
+
+On `SIGTERM` / `SIGINT` the daemon closes all live MCP sessions cleanly and
+exits 0.
+
+### Endpoints
+
+| Method | Path    | Purpose                                                      |
+|--------|---------|--------------------------------------------------------------|
+| `POST` | `/mcp`  | MCP JSON-RPC (initialize, tools/list, tools/call, ...)        |
+| `GET`  | `/mcp`  | SSE stream for server-initiated notifications (per session)  |
+| `DELETE` | `/mcp` | Explicit session close                                       |
+| `GET`  | `/health` | Liveness probe — `{ status, uptime, version, connections, sessions }` |
+
+### Claude Code client config
+
+```bash
+# Add the HTTP transport to Claude Code
+claude mcp add-json --scope user haops '{
+  "type": "http",
+  "url": "http://127.0.0.1:3100/mcp"
+}'
+
+# Or for a non-default port
+claude mcp add-json --scope user haops '{
+  "type": "http",
+  "url": "http://127.0.0.1:3199/mcp"
+}'
+```
+
+Stdio mode remains the default when neither `--http` nor `--port` is
+passed, so existing stdio-based configurations keep working unchanged.
+
+### Smoke test with curl
+
+```bash
+# Health
+curl http://127.0.0.1:3100/health
+
+# Initialize a session (save the Mcp-Session-Id header from the response)
+curl -i -X POST http://127.0.0.1:3100/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}},"id":1}'
+
+# List tools (reuse the session id from above)
+curl -X POST http://127.0.0.1:3100/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: <session-id-from-init>" \
+  -H "Mcp-Protocol-Version: 2025-03-26" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":2}'
+```
+
+### When to use which mode
+
+| Scenario                                         | Transport |
+|--------------------------------------------------|-----------|
+| Single Claude Code session, default setup        | stdio     |
+| Multiple Claude Code sessions on the same machine | HTTP daemon |
+| Claude Desktop                                   | stdio     |
+| VS Code extension (alongside CLI sessions)       | HTTP daemon |
+
 ## Architecture
 
 ```
