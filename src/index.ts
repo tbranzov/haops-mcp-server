@@ -9,6 +9,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { HAOpsApiClient } from './api/client.js';
+import { parseCliArgs } from './cli-args.js';
 import type {
   CreateModuleRequest,
   UpdateModuleRequest,
@@ -5778,31 +5779,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
   return server;
-}
-
-/**
- * Parse CLI flags.
- *
- * Usage:
- *   node dist/index.js                   — stdio mode (default, backward compat)
- *   node dist/index.js --http            — HTTP daemon on port 3100
- *   node dist/index.js --http --port N   — HTTP daemon on port N
- */
-function parseCliArgs(argv: string[]): { httpMode: boolean; port: number } {
-  const args = argv.slice(2);
-  const httpMode = args.includes('--http');
-  const portIdx = args.indexOf('--port');
-  let port = 3100;
-  if (portIdx !== -1 && portIdx + 1 < args.length) {
-    const parsed = parseInt(args[portIdx + 1], 10);
-    if (!Number.isNaN(parsed) && parsed > 0 && parsed < 65536) {
-      port = parsed;
-    } else {
-      console.error(`Invalid --port value: ${args[portIdx + 1]}`);
-      process.exit(1);
-    }
-  }
-  return { httpMode, port };
 }
 
 /**
