@@ -93,12 +93,10 @@ describe('HAOpsApiClient', () => {
       expect(result).toEqual(mockModule);
     });
 
-    it('should update module and unwrap {success,entity} envelope', async () => {
+    it('should update module and return the raw entity', async () => {
       const mockModule = { id: '1', title: 'Updated Module' };
       const axiosInstance = mockCreate.mock.results[0].value;
-      axiosInstance.put.mockResolvedValue({
-        data: { success: true, message: 'Module updated', entity: mockModule },
-      });
+      axiosInstance.put.mockResolvedValue({ data: mockModule });
 
       const data = { title: 'Updated Module' };
       const result = await client.updateModule('module-1', data);
@@ -108,29 +106,30 @@ describe('HAOpsApiClient', () => {
     });
   });
 
-  describe('Envelope unwrapping — PUT /api/{modules,features,issues}/[id]', () => {
-    it('updateFeature should unwrap response.data.entity', async () => {
+  // PUT /api/{modules,features,issues}/[id] returns the raw entity, not an
+  // envelope. An earlier client commit assumed { success, message, entity }
+  // and unwrapped .entity — that yielded `undefined` in MCP update_* tools.
+  // These tests lock in the raw-entity contract.
+  describe('PUT returns raw entity (no envelope)', () => {
+    it('updateFeature returns response.data directly', async () => {
       const mockFeature = { id: 'f1', title: 'F', takenBy: 'agent-1' };
       const axiosInstance = mockCreate.mock.results[0].value;
-      axiosInstance.put.mockResolvedValue({
-        data: { success: true, message: 'Feature updated', entity: mockFeature },
-      });
+      axiosInstance.put.mockResolvedValue({ data: mockFeature });
 
       const result = await client.updateFeature('f1', { title: 'F' });
 
       expect(axiosInstance.put).toHaveBeenCalledWith('/api/features/f1', { title: 'F' });
       expect(result).toEqual(mockFeature);
-      // Regression guard: the old (buggy) code would return the raw envelope and
-      // takenBy would be undefined on the result.
+      // Regression guard: the wrongly-unwrapped version returned undefined.
+      expect(result).toBeDefined();
+      expect((result as { id?: string }).id).toBe('f1');
       expect((result as { takenBy?: string }).takenBy).toBe('agent-1');
     });
 
-    it('updateIssue should unwrap response.data.entity', async () => {
+    it('updateIssue returns response.data directly', async () => {
       const mockIssue = { id: 'i1', title: 'I', takenBy: 'agent-2', status: 'in-progress' };
       const axiosInstance = mockCreate.mock.results[0].value;
-      axiosInstance.put.mockResolvedValue({
-        data: { success: true, message: 'Issue updated', entity: mockIssue },
-      });
+      axiosInstance.put.mockResolvedValue({ data: mockIssue });
 
       const result = await client.updateIssue('i1', { status: 'in-progress' });
 
@@ -138,7 +137,20 @@ describe('HAOpsApiClient', () => {
         status: 'in-progress',
       });
       expect(result).toEqual(mockIssue);
+      expect(result).toBeDefined();
+      expect((result as { id?: string }).id).toBe('i1');
       expect((result as { takenBy?: string }).takenBy).toBe('agent-2');
+    });
+
+    it('updateModule returns response.data directly', async () => {
+      const mockModule = { id: 'm1', title: 'M', takenBy: 'agent-3' };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: mockModule });
+
+      const result = await client.updateModule('m1', { title: 'M' });
+
+      expect(result).toEqual(mockModule);
+      expect((result as { id?: string }).id).toBe('m1');
     });
   });
 });

@@ -34,20 +34,15 @@ interface PaginatedResponse<T> {
 }
 
 /**
- * HAOps PUT /api/{modules|features|issues}/[id] envelope.
- * All three routes return { success, message, entity } — not the raw entity.
- * See haops commit 5d263eb for the route contract.
- */
-interface EntityUpdateResponse<T> {
-  success: boolean;
-  message: string;
-  entity: T;
-}
-
-/**
  * HAOps POST /api/{module|feature|issue}/[id]/claim envelope.
  * Claim routes return { claimed: true, <entityKey>: T } where entityKey is
  * "module" | "feature" | "issue". See haops commit 3628dddd.
+ *
+ * Note: PUT /api/{modules|features|issues}/[id] does NOT use an envelope —
+ * it returns the raw entity (see e.g. app/api/features/[id]/route.ts line 198
+ * `return NextResponse.json(feature)` on commit 5d263eb). An earlier client
+ * commit wrongly assumed an envelope and unwrapped `.entity`, which yielded
+ * undefined for the `feature`/`module`/`issue` response in MCP update_* tools.
  */
 type ClaimResponse<K extends string, T> = {
   claimed: boolean;
@@ -234,11 +229,8 @@ export class HAOpsApiClient {
 
   async updateModule(moduleId: string, data: UpdateModuleRequest): Promise<Module> {
     try {
-      const response = await this.axios.put<EntityUpdateResponse<Module>>(
-        `/api/modules/${moduleId}`,
-        data
-      );
-      return response.data.entity;
+      const response = await this.axios.put<Module>(`/api/modules/${moduleId}`, data);
+      return response.data;
     } catch (error) {
       return this.handleError(error);
     }
@@ -304,11 +296,8 @@ export class HAOpsApiClient {
 
   async updateFeature(featureId: string, data: UpdateFeatureRequest): Promise<Feature> {
     try {
-      const response = await this.axios.put<EntityUpdateResponse<Feature>>(
-        `/api/features/${featureId}`,
-        data
-      );
-      return response.data.entity;
+      const response = await this.axios.put<Feature>(`/api/features/${featureId}`, data);
+      return response.data;
     } catch (error) {
       return this.handleError(error);
     }
@@ -376,11 +365,8 @@ export class HAOpsApiClient {
 
   async updateIssue(issueId: string, data: UpdateIssueRequest): Promise<Issue> {
     try {
-      const response = await this.axios.put<EntityUpdateResponse<Issue>>(
-        `/api/issues/${issueId}`,
-        data
-      );
-      return response.data.entity;
+      const response = await this.axios.put<Issue>(`/api/issues/${issueId}`, data);
+      return response.data;
     } catch (error) {
       return this.handleError(error);
     }
@@ -437,7 +423,7 @@ export class HAOpsApiClient {
 
         // Try to claim anyway - server will check if it's the same API key
         try {
-          const response = await this.axios.put<EntityUpdateResponse<Issue>>(
+          const response = await this.axios.put<Issue>(
             `/api/issues/${issueId}`,
             { status: 'in-progress' }
           );
@@ -446,7 +432,7 @@ export class HAOpsApiClient {
             success: true,
             message: 'Already claimed by you',
             canResume: true,
-            issue: response.data.entity,
+            issue: response.data,
           };
         } catch (error) {
           // 409 means another agent owns it
@@ -475,7 +461,7 @@ export class HAOpsApiClient {
 
       // Claim the issue (PUT status=in-progress)
       try {
-        const response = await this.axios.put<EntityUpdateResponse<Issue>>(
+        const response = await this.axios.put<Issue>(
           `/api/issues/${issueId}`,
           { status: 'in-progress' }
         );
@@ -483,7 +469,7 @@ export class HAOpsApiClient {
         return {
           success: true,
           message: 'Issue claimed successfully',
-          issue: response.data.entity,
+          issue: response.data,
         };
       } catch (error) {
         // Race condition - another agent claimed it between GET and PUT
