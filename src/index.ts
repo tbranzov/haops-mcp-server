@@ -38,12 +38,6 @@ if (!HAOPS_API_KEY) {
 // Initialize API client
 const apiClient = new HAOpsApiClient(HAOPS_API_URL, HAOPS_API_KEY);
 
-// Create MCP server
-const server = new Server(
-  { name: 'haops-mcp-server', version: '0.1.0' },
-  { capabilities: { resources: {}, tools: {} } }
-);
-
 // Helper: format relative date for MCP output
 function formatRelativeDate(dateStr: string): string {
   const date = new Date(dateStr);
@@ -59,6 +53,25 @@ function formatRelativeDate(dateStr: string): string {
   if (diffDays < 30) return `${diffDays}d ago`;
   return date.toLocaleDateString();
 }
+
+/**
+ * Build a fresh MCP `Server` instance with all HAOps tool & resource
+ * handlers registered.
+ *
+ * The SDK's Protocol layer binds 1:1 with a transport — a Server that has
+ * already been `.connect()`ed cannot accept a second transport. Stdio mode
+ * therefore uses a single instance (created once in `main()`), while HTTP
+ * mode calls this factory once per client session.
+ *
+ * All handlers capture `apiClient` (the module-level singleton) so every
+ * session shares the same connection pool + auth context toward
+ * haops.datapatient.eu. This is intentional: one daemon = one HAOps user.
+ */
+export function buildMcpServer(): Server {
+  const server = new Server(
+    { name: 'haops-mcp-server', version: '0.1.0' },
+    { capabilities: { resources: {}, tools: {} } }
+  );
 
 /**
  * List available resources
@@ -5764,10 +5777,56 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   throw new Error(`Unknown tool: ${name}`);
 });
 
+  return server;
+}
+
+/**
+ * Parse CLI flags.
+ *
+ * Usage:
+ *   node dist/index.js                   — stdio mode (default, backward compat)
+ *   node dist/index.js --http            — HTTP daemon on port 3100
+ *   node dist/index.js --http --port N   — HTTP daemon on port N
+ */
+function parseCliArgs(argv: string[]): { httpMode: boolean; port: number } {
+  const args = argv.slice(2);
+  const httpMode = args.includes('--http');
+  const portIdx = args.indexOf('--port');
+  let port = 3100;
+  if (portIdx !== -1 && portIdx + 1 < args.length) {
+    const parsed = parseInt(args[portIdx + 1], 10);
+    if (!Number.isNaN(parsed) && parsed > 0 && parsed < 65536) {
+      port = parsed;
+    } else {
+      console.error(`Invalid --port value: ${args[portIdx + 1]}`);
+      process.exit(1);
+    }
+  }
+  return { httpMode, port };
+}
+
 /**
  * Start the server
  */
 async function main() {
+  const { httpMode, port } = parseCliArgs(process.argv);
+
+  if (httpMode) {
+    // Dynamic import so stdio mode never loads express.
+    const { createHttpServer, installSignalHandlers } = await import('./http-server.js');
+    // HTTP mode: the factory is called once per client session; each session
+    // gets its own Server + transport but shares the `apiClient` singleton.
+    const handle = await createHttpServer({ port, buildMcpServer });
+    installSignalHandlers(handle);
+    console.error(`HAOps MCP Server running on http://127.0.0.1:${port}/mcp`);
+    console.error(`Health endpoint: http://127.0.0.1:${port}/health`);
+    console.error(`API URL: ${HAOPS_API_URL}`);
+    return;
+  }
+
+  // Stdio mode: single Server instance for the lifetime of the process
+  // (the one stdin/stdout pair owns it).
+  const server = buildMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('HAOps MCP Server running on stdio');
