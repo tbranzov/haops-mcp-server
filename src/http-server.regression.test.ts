@@ -98,20 +98,24 @@ describe('HTTP server — regression (QA)', () => {
       expect(handle.getSessionCount()).toBe(0);
     });
 
-    it('DELETE with an unknown session id returns 400, not 500 or 200', async () => {
+    it('DELETE with an unknown session id returns 404 (spec recovery signal), not 500 or 200', async () => {
       const res = await request(handle.httpServer)
         .delete('/mcp')
         .set('Accept', MCP_ACCEPT)
         .set('Mcp-Session-Id', '00000000-0000-0000-0000-000000000000')
         .set('Mcp-Protocol-Version', MCP_PROTOCOL_VERSION);
 
-      // The handler rejects unknown session ids with the JSON-RPC "invalid
-      // request" envelope and status 400. Guards against a regression where
-      // unknown ids would leak a 500 or be silently accepted.
-      expect(res.status).toBe(400);
+      // MCP spec 2025-03-26 / 2025-06-18: unknown or evicted session ids
+      // return HTTP 404 so compliant clients can auto-reinitialise. (Before
+      // feature 035c498f, this was 400 + -32600.)
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({
+        jsonrpc: '2.0',
+        error: expect.objectContaining({ code: -32001 }),
+      });
     });
 
-    it('POST to a deleted session id is rejected with 400', async () => {
+    it('POST to a deleted session id is rejected with 404 (spec recovery signal)', async () => {
       const sid = await initSession(handle.httpServer);
 
       // Close it
@@ -129,10 +133,11 @@ describe('HTTP server — regression (QA)', () => {
         .set('Mcp-Protocol-Version', MCP_PROTOCOL_VERSION)
         .send({ jsonrpc: '2.0', method: 'tools/list', id: 5 });
 
-      expect(res.status).toBe(400);
+      // 404 + -32001 per MCP spec (was 400 + -32600 before feature 035c498f).
+      expect(res.status).toBe(404);
       expect(res.body).toMatchObject({
         jsonrpc: '2.0',
-        error: expect.objectContaining({ code: -32600 }),
+        error: expect.objectContaining({ code: -32001 }),
       });
     });
   });

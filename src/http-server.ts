@@ -21,12 +21,29 @@
  *   - Per-session transports are cached in an in-memory `Map`; onsessionclosed
  *     evicts them.
  *
+ * Session lifetime (feature 035c498f)
+ * -----------------------------------
+ *   Each session carries a `lastActivityAt: number` timestamp. A reaper runs
+ *   on `MCP_REAPER_INTERVAL_MS` (default 60s) and evicts sessions whose idle
+ *   time exceeds `MCP_IDLE_TTL_MS` (default 30min). On `initialize`, if the
+ *   Map is at `MCP_MAX_SESSIONS` (default 64), the single oldest-idle session
+ *   is evicted first (cap-eviction); if every live session is active "right
+ *   now", initialize is rejected with HTTP 503.
+ *
+ * Unknown/evicted session id (MCP spec recovery signal)
+ * -----------------------------------------------------
+ *   Per MCP spec 2025-03-26 / 2025-06-18, a POST carrying an unknown or
+ *   already-evicted `Mcp-Session-Id` returns **HTTP 404 + JSON-RPC -32001**.
+ *   This is the canonical signal for clients to reinitialise. A POST without
+ *   any session id and whose body is not an `initialize` request is still a
+ *   400 + -32600 (malformed request shape, not an eviction recovery case).
+ *
  * Endpoints
  * ---------
  *   POST /mcp     — MCP JSON-RPC (initialize + subsequent calls via Mcp-Session-Id)
  *   GET  /mcp     — SSE stream for server-initiated notifications (per-session)
  *   DELETE /mcp   — explicit session close
- *   GET  /health  — liveness probe
+ *   GET  /health  — liveness probe (includes session + eviction counters)
  *
  * Security
  * --------
@@ -40,6 +57,21 @@ import type { NextFunction, Request, Response } from 'express';
 
 const SERVER_VERSION = '2.3.0';
 
+/** Idle cutoff before a session is reaped (ms). Default: 30 min. */
+const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000;
+/** Hard cap on concurrent sessions. Default: 64. */
+const DEFAULT_MAX_SESSIONS = 64;
+/** How often the reaper runs. Default: 60s. */
+const DEFAULT_REAPER_INTERVAL_MS = 60 * 1000;
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
 export interface HttpServerHandle {
   /** The underlying Node HTTP server (useful for supertest / programmatic shutdown). */
   httpServer: HttpServer;
@@ -49,6 +81,25 @@ export interface HttpServerHandle {
   getActiveConnections: () => number;
   /** Number of live MCP sessions (one per Claude client). */
   getSessionCount: () => number;
+  /**
+   * Force-run the idle reaper once. Tests use this with Jest fake timers instead
+   * of waiting for the real interval to fire.
+   */
+  runReaper: () => Promise<void>;
+  /** Metric counters (for tests and /health). */
+  getMetrics: () => {
+    sessionsEvicted: number;
+    sessionsEvictedIdle: number;
+    sessionsEvictedCap: number;
+    idleTtlMs: number;
+    maxSessions: number;
+    reaperIntervalMs: number;
+  };
+  /**
+   * Read-only view of a session's last activity timestamp (ms). Returns
+   * undefined if the session does not exist. Exposed for tests.
+   */
+  getSessionLastActivityAt: (sessionId: string) => number | undefined;
 }
 
 export interface CreateHttpServerOptions {
@@ -75,6 +126,25 @@ export interface CreateHttpServerOptions {
    * a transport).
    */
   buildMcpServer: () => Server;
+  /**
+   * Override the idle TTL (ms). Falls back to `MCP_IDLE_TTL_MS` env var,
+   * then to DEFAULT_IDLE_TTL_MS.
+   */
+  idleTtlMs?: number;
+  /**
+   * Override max concurrent sessions. Falls back to `MCP_MAX_SESSIONS` env
+   * var, then to DEFAULT_MAX_SESSIONS.
+   */
+  maxSessions?: number;
+  /**
+   * Override reaper interval (ms). Falls back to `MCP_REAPER_INTERVAL_MS`
+   * env var, then to DEFAULT_REAPER_INTERVAL_MS.
+   */
+  reaperIntervalMs?: number;
+  /**
+   * Inject a clock for deterministic tests. Defaults to `() => Date.now()`.
+   */
+  now?: () => number;
 }
 
 /**
@@ -99,12 +169,26 @@ export async function createHttpServer(
   const host = options.host ?? '127.0.0.1';
   const listen = options.listen ?? true;
   const buildMcpServer = options.buildMcpServer;
+  const now = options.now ?? (() => Date.now());
+
+  const idleTtlMs =
+    options.idleTtlMs ?? readPositiveIntEnv('MCP_IDLE_TTL_MS', DEFAULT_IDLE_TTL_MS);
+  const maxSessions =
+    options.maxSessions ?? readPositiveIntEnv('MCP_MAX_SESSIONS', DEFAULT_MAX_SESSIONS);
+  const reaperIntervalMs =
+    options.reaperIntervalMs ??
+    readPositiveIntEnv('MCP_REAPER_INTERVAL_MS', DEFAULT_REAPER_INTERVAL_MS);
 
   type TransportEntry = {
     transport: InstanceType<typeof StreamableHTTPServerTransport>;
     server: Server;
+    lastActivityAt: number;
   };
   const sessions = new Map<string, TransportEntry>();
+
+  // Metric counters. Incremented on eviction; surfaced via /health and getMetrics().
+  let sessionsEvictedIdle = 0;
+  let sessionsEvictedCap = 0;
 
   const app = express();
 
@@ -153,8 +237,71 @@ export async function createHttpServer(
       version: SERVER_VERSION,
       connections: activeConnections,
       sessions: sessions.size,
+      sessionsEvicted: sessionsEvictedIdle + sessionsEvictedCap,
+      sessionsEvictedIdle,
+      sessionsEvictedCap,
+      idleTtlMs,
+      maxSessions,
+      reaperIntervalMs,
     });
   });
+
+  /** Close a session's transport and remove it from the map. Idempotent. */
+  const evictSession = async (sessionId: string): Promise<void> => {
+    const entry = sessions.get(sessionId);
+    if (!entry) return;
+    // Remove FIRST so transport.onclose re-entering this function is a no-op.
+    sessions.delete(sessionId);
+    try {
+      // Protocol.close() calls transport.close() internally. We intentionally
+      // swallow errors here — the session is being force-evicted and the
+      // underlying resources are already suspect.
+      await entry.server.close();
+    } catch {
+      /* already closed / errored */
+    }
+  };
+
+  /** Returns the sessionId of the least-recently-active session, or undefined. */
+  const findOldestIdleSessionId = (): string | undefined => {
+    let oldestId: string | undefined;
+    let oldestAt = Number.POSITIVE_INFINITY;
+    for (const [id, entry] of sessions) {
+      if (entry.lastActivityAt < oldestAt) {
+        oldestAt = entry.lastActivityAt;
+        oldestId = id;
+      }
+    }
+    return oldestId;
+  };
+
+  /**
+   * Reaper. Evicts all sessions whose lastActivityAt is older than idleTtlMs.
+   * Exposed via handle.runReaper() for tests.
+   */
+  const runReaper = async (): Promise<void> => {
+    const cutoff = now() - idleTtlMs;
+    const toEvict: string[] = [];
+    for (const [id, entry] of sessions) {
+      if (entry.lastActivityAt < cutoff) {
+        toEvict.push(id);
+      }
+    }
+    for (const id of toEvict) {
+      await evictSession(id);
+      sessionsEvictedIdle += 1;
+    }
+  };
+
+  // Schedule the reaper. ref=false so the interval does not keep the Node
+  // process alive on its own — graceful shutdown clears it explicitly.
+  const reaperHandle: NodeJS.Timeout = setInterval(() => {
+    runReaper().catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('MCP reaper error:', err);
+    });
+  }, reaperIntervalMs);
+  if (typeof reaperHandle.unref === 'function') reaperHandle.unref();
 
   /**
    * Build a new session: fresh MCP Server, fresh transport, onsessioninitialized
@@ -162,18 +309,26 @@ export async function createHttpServer(
    */
   const createSession = async (): Promise<TransportEntry> => {
     const server = buildMcpServer();
+    const entry: TransportEntry = {
+      // initialised below — placeholder to satisfy TS
+      transport: undefined as unknown as InstanceType<typeof StreamableHTTPServerTransport>,
+      server,
+      lastActivityAt: now(),
+    };
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => cryptoModule.randomUUID(),
       // JSON responses make concurrent curl/supertest trivial. Streamable
       // HTTP clients that want SSE can still hit GET /mcp.
       enableJsonResponse: true,
       onsessioninitialized: (sessionId) => {
-        sessions.set(sessionId, { transport, server });
+        entry.lastActivityAt = now();
+        sessions.set(sessionId, entry);
       },
       onsessionclosed: (sessionId) => {
         sessions.delete(sessionId);
       },
     });
+    entry.transport = transport;
 
     transport.onclose = () => {
       // transport.sessionId is populated after initialize.
@@ -185,7 +340,7 @@ export async function createHttpServer(
     };
 
     await server.connect(transport);
-    return { transport, server };
+    return entry;
   };
 
   /**
@@ -204,16 +359,52 @@ export async function createHttpServer(
 
       if (sessionId && sessions.has(sessionId)) {
         entry = sessions.get(sessionId);
+        if (entry) entry.lastActivityAt = now();
+      } else if (sessionId && !sessions.has(sessionId)) {
+        // Known-shape request with an unknown/evicted session id. MCP spec
+        // recovery signal: HTTP 404 + JSON-RPC -32001 tells the client to
+        // reinitialise.
+        res.status(404).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32001,
+            message: 'Session not found — please reinitialize',
+          },
+          id: null,
+        });
+        return;
       } else if (req.method === 'POST' && !sessionId && isInitializeRequest(req.body)) {
-        // First POST from a new client: initialize.
+        // First POST from a new client: initialize. Enforce cap first.
+        if (sessions.size >= maxSessions) {
+          // Try to evict the single oldest-idle session to make room.
+          const oldestId = findOldestIdleSessionId();
+          if (oldestId !== undefined) {
+            await evictSession(oldestId);
+            sessionsEvictedCap += 1;
+          }
+          // If still at cap (edge case: a race filled the Map between the
+          // find and the evict), refuse with 503. Client should back off.
+          if (sessions.size >= maxSessions) {
+            res.status(503).json({
+              jsonrpc: '2.0',
+              error: {
+                code: -32002,
+                message: 'Session capacity exhausted — please retry',
+              },
+              id: null,
+            });
+            return;
+          }
+        }
         entry = await createSession();
       } else {
+        // No session id AND body is not an initialize — malformed request.
         res.status(400).json({
           jsonrpc: '2.0',
           error: {
             code: -32600,
             message:
-              'Invalid Request: missing or unknown Mcp-Session-Id, and body is not an initialize request',
+              'Invalid Request: missing Mcp-Session-Id and body is not an initialize request',
           },
           id: null,
         });
@@ -285,6 +476,9 @@ export async function createHttpServer(
   }
 
   const close = async (): Promise<void> => {
+    // Stop the reaper first — no point reaping during teardown.
+    clearInterval(reaperHandle);
+
     // Close every active session's transport first, so in-flight MCP
     // requests receive a clean shutdown. The Protocol layer calls
     // transport.close() internally when server.close() runs, so calling
@@ -312,6 +506,16 @@ export async function createHttpServer(
     close,
     getActiveConnections: () => activeConnections,
     getSessionCount: () => sessions.size,
+    runReaper,
+    getMetrics: () => ({
+      sessionsEvicted: sessionsEvictedIdle + sessionsEvictedCap,
+      sessionsEvictedIdle,
+      sessionsEvictedCap,
+      idleTtlMs,
+      maxSessions,
+      reaperIntervalMs,
+    }),
+    getSessionLastActivityAt: (sessionId: string) => sessions.get(sessionId)?.lastActivityAt,
   };
 }
 
