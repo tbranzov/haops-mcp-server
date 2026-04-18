@@ -28,7 +28,7 @@
  *   time exceeds `MCP_IDLE_TTL_MS` (default 30min). On `initialize`, if the
  *   Map is at `MCP_MAX_SESSIONS` (default 64), the single oldest-idle session
  *   is evicted first (cap-eviction); if every live session is active "right
- *   now", initialize is rejected with HTTP 503.
+ *   now", initialize is rejected with HTTP 429 + JSON-RPC -32000.
  *
  * Unknown/evicted session id (MCP spec recovery signal)
  * -----------------------------------------------------
@@ -59,8 +59,8 @@ const SERVER_VERSION = '2.3.0';
 
 /** Idle cutoff before a session is reaped (ms). Default: 30 min. */
 const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000;
-/** Hard cap on concurrent sessions. Default: 64. */
-const DEFAULT_MAX_SESSIONS = 64;
+/** Hard cap on concurrent sessions. Default: 100 (≈ 8 sessions × 12 restarts). */
+const DEFAULT_MAX_SESSIONS = 100;
 /** How often the reaper runs. Default: 60s. */
 const DEFAULT_REAPER_INTERVAL_MS = 60 * 1000;
 
@@ -91,6 +91,7 @@ export interface HttpServerHandle {
     sessionsEvicted: number;
     sessionsEvictedIdle: number;
     sessionsEvictedCap: number;
+    sessionsRejectedCap: number;
     idleTtlMs: number;
     maxSessions: number;
     reaperIntervalMs: number;
@@ -186,9 +187,10 @@ export async function createHttpServer(
   };
   const sessions = new Map<string, TransportEntry>();
 
-  // Metric counters. Incremented on eviction; surfaced via /health and getMetrics().
+  // Metric counters. Incremented on eviction / rejection; surfaced via /health and getMetrics().
   let sessionsEvictedIdle = 0;
   let sessionsEvictedCap = 0;
+  let sessionsRejectedCap = 0;
 
   const app = express();
 
@@ -240,6 +242,7 @@ export async function createHttpServer(
       sessionsEvicted: sessionsEvictedIdle + sessionsEvictedCap,
       sessionsEvictedIdle,
       sessionsEvictedCap,
+      sessionsRejectedCap,
       idleTtlMs,
       maxSessions,
       reaperIntervalMs,
@@ -383,13 +386,14 @@ export async function createHttpServer(
             sessionsEvictedCap += 1;
           }
           // If still at cap (edge case: a race filled the Map between the
-          // find and the evict), refuse with 503. Client should back off.
+          // find and the evict), refuse with 429. Client should back off.
           if (sessions.size >= maxSessions) {
-            res.status(503).json({
+            sessionsRejectedCap += 1;
+            res.status(429).json({
               jsonrpc: '2.0',
               error: {
-                code: -32002,
-                message: 'Session capacity exhausted — please retry',
+                code: -32000,
+                message: 'Too many sessions — please retry',
               },
               id: null,
             });
@@ -511,6 +515,7 @@ export async function createHttpServer(
       sessionsEvicted: sessionsEvictedIdle + sessionsEvictedCap,
       sessionsEvictedIdle,
       sessionsEvictedCap,
+      sessionsRejectedCap,
       idleTtlMs,
       maxSessions,
       reaperIntervalMs,
