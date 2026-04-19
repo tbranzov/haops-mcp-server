@@ -1275,7 +1275,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // ===== Documentation Builder Tools =====
       {
         name: 'haops_list_doc_artifacts',
-        description: 'List documentation artifacts for a project. Each artifact represents a type of documentation (architecture, developer, deployment, api, user_guide, changelog, adr).',
+        description: 'List documentation artifacts for a project. Each artifact represents a type of documentation (architecture, developer, deployment, api, user_guide, changelog, adr, plans).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1300,7 +1300,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: {
               type: 'string',
               description: 'Artifact type',
-              enum: ['architecture', 'developer', 'deployment', 'api', 'user_guide', 'changelog', 'adr'],
+              enum: ['architecture', 'developer', 'deployment', 'api', 'user_guide', 'changelog', 'adr', 'plans'],
             },
             title: {
               type: 'string',
