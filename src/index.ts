@@ -1246,6 +1246,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'haops_get_help_article',
+        description: 'Get a help article by slug, including full HTML content. Use this before haops_update_help_article when you need to append to existing content (update is wholesale replace).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            slug: {
+              type: 'string',
+              description: 'The article slug to fetch',
+            },
+          },
+          required: ['slug'],
+        },
+      },
+      {
         name: 'haops_update_help_article',
         description: 'Update an existing help article by slug.',
         inputSchema: {
@@ -3870,6 +3884,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = await apiClient.request('POST', `/api/help/sections/${sectionSlug}/articles`, {
         title, content, isPublished,
       });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_help_article') {
+    try {
+      const { slug } = args as { slug: string };
+      const result = await apiClient.request('GET', `/api/help/articles/${slug}`);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };
