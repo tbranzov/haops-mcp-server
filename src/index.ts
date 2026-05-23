@@ -1823,6 +1823,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
 
+      // ===== Role Template Tools (F2) =====
+      {
+        name: 'haops_list_role_templates',
+        description: 'List agent role templates. A role template bundles a core `baseBody` (boot + scope + handoff markdown) with a set of default skills, and serves as the starting point for an agent role (architect/dev/qa/devops). System templates are seeded; admins may publish project-specific custom templates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            baseRole: {
+              type: 'string',
+              enum: ['architect', 'dev', 'qa', 'devops', 'researcher', 'custom'],
+              description: 'Filter by base role bucket.',
+            },
+            search: {
+              type: 'string',
+              description: 'Free-text search across name + description.',
+            },
+          },
+        },
+      },
+      {
+        name: 'haops_read_role_template',
+        description: 'Read a single role template by its kebab-case name. Returns the current version with `baseBody` (full markdown) + `defaultSkills` hydrated (each entry includes skill name + description). Use after haops_list_role_templates to fetch the full template contents.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case template name (e.g. "architect", "dev").',
+            },
+          },
+          required: ['name'],
+        },
+      },
+
       // ===== Testing MCP Tools =====
 
       {
@@ -4531,6 +4565,94 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error reading skill: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // ===== Role Template Tool Handlers (F2) =====
+
+  if (name === 'haops_list_role_templates') {
+    try {
+      const opts = args as { baseRole?: string; search?: string };
+      const templates = await apiClient.listRoleTemplates(opts);
+
+      if (templates.length === 0) {
+        return {
+          content: [{ type: 'text', text: 'No role templates found for the given filters.' }],
+        };
+      }
+
+      // One line per template — name, base role, system flag, default-skill
+      // count. The full baseBody is fetched on demand via
+      // haops_read_role_template so we don't blow the agent's context window
+      // on every list (baseBody can be 50-200 lines per template).
+      const lines = [`Found ${templates.length} role template(s):`, ''];
+      for (const t of templates) {
+        const baseRole = (t.baseRole as string) ?? 'unknown';
+        const system = t.isSystem ? ' [system]' : '';
+        const ver = t.version ? ` v${t.version}` : '';
+        const skills = Array.isArray(t.defaultSkills)
+          ? (t.defaultSkills as unknown[]).length
+          : 0;
+        const desc = t.description ? ` — ${t.description as string}` : '';
+        lines.push(`- ${t.name as string} (${baseRole}${ver})${system} defaultSkills=${skills}${desc}`);
+      }
+
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error listing role templates: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_read_role_template') {
+    try {
+      const { name: templateName } = args as { name: string };
+      const template = await apiClient.readRoleTemplate(templateName);
+
+      // Default skills come back hydrated from the API (name + description
+      // included). Render one line per skill so the agent gets the full
+      // bundle context without a second round-trip.
+      const skillLines: string[] = [];
+      if (Array.isArray(template.defaultSkills)) {
+        for (const entry of template.defaultSkills as Array<Record<string, unknown>>) {
+          const required = entry.required ? '*' : ' ';
+          const skill = (entry.skill as Record<string, unknown> | undefined) ?? {};
+          const sname = (skill.name as string) ?? `(missing skillId ${entry.skillId as string})`;
+          const sdesc = skill.description ? ` — ${skill.description as string}` : '';
+          skillLines.push(`  ${required} ${sname}${sdesc}`);
+        }
+      }
+
+      const header = [
+        `Role Template: ${template.name as string}`,
+        `Base role: ${template.baseRole as string}`,
+        `Version: ${template.version ?? 'N/A'}`,
+        template.isSystem ? 'System: true (DELETE blocked at API)' : 'System: false',
+        template.description ? `Description: ${template.description as string}` : '',
+        '',
+        skillLines.length > 0
+          ? `Default skills (* = required):\n${skillLines.join('\n')}`
+          : 'Default skills: (none)',
+        '',
+        '---',
+        '',
+        (template.baseBody as string) || '(empty)',
+      ].filter(Boolean);
+
+      return {
+        content: [{ type: 'text', text: header.join('\n') }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error reading role template: ${message}` }],
         isError: true,
       };
     }

@@ -1600,6 +1600,58 @@ export class HAOpsApiClient {
     }
   }
 
+  // ===== Role Template Methods (F2) =====
+
+  /**
+   * List system role templates.
+   *
+   * Templates are system-wide (no project scope axis), so the filters are
+   * leaner than skills:
+   *   - baseRole: architect | dev | qa | devops | researcher | custom
+   *   - search: free-text on name + description
+   *
+   * The MCP shape is always a flat array — pagination is exposed by the
+   * underlying API but agents enumerate templates once at boot, not page
+   * through them.
+   */
+  async listRoleTemplates(
+    opts: {
+      baseRole?: string;
+      search?: string;
+    } = {},
+  ): Promise<Array<Record<string, unknown>>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.baseRole) params.set('baseRole', opts.baseRole);
+      if (opts.search) params.set('search', opts.search);
+      const query = params.toString();
+      const response = await this.axios.get<
+        Array<Record<string, unknown>> | { items: Array<Record<string, unknown>> }
+      >(`/api/role-templates${query ? `?${query}` : ''}`);
+      const data = response.data;
+      if (Array.isArray(data)) return data;
+      return Array.isArray(data.items) ? data.items : [];
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Read a single role template by its kebab-case name. Returns the current
+   * version with `defaultSkills` hydrated (each entry includes the skill name
+   * + description so agents don't need a second round-trip).
+   */
+  async readRoleTemplate(name: string): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/role-templates/${encodeURIComponent(name)}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   // ===== Testing MCP Tools =====
 
   async reportTestRun(
