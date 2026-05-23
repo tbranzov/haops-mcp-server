@@ -1698,7 +1698,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // ===== Protocol Tools =====
       {
         name: 'haops_read_protocol',
-        description: 'Read the work protocol for a specific agent role in a project. Returns the current version by default, or a specific historical version. Protocols define HOW agents should work (scope, workflow, handoff, etc.).',
+        description:
+          'Read the work protocol for a specific agent role in a project. Protocols define HOW agents should work (scope, workflow, handoff, etc.).\n\n' +
+          'OUTPUT SHAPES (v2.6 — F4 composed protocols):\n' +
+          '  • Legacy project (templateId IS NULL) — always returns the raw monolithic shape regardless of `mode`: { mode: "legacy", version, bytes, body, content, ... }. The `mode` and `bundle` params have no effect; output is byte-identical to v2.5.\n' +
+          '  • Composed project + mode="lazy" (DEFAULT) — { mode: "composed-lazy", version, bytes, body: "", coreContent, skillRefs[], warnings? }. Agent reads coreContent for the boot section, then uses haops_read_skill to fetch individual skill bodies on demand.\n' +
+          '  • Composed project + mode="bundle" — { mode: "composed-bundle", version, bytes, body, skillRefs[], warnings? }. Full composed markdown in `body` (template baseBody + each enabled skill body + customContent, joined with "---"). Use this when caching offline or when you need the full document in one round-trip.\n' +
+          'When `version` is set, returns that specific historical row (raw DB shape — version history predates composed mode; mode/bundle are ignored).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1712,7 +1718,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             version: {
               type: 'number',
-              description: 'Specific version number to read. If omitted, returns the current version.',
+              description:
+                'Specific version number to read. If omitted, returns the current version. When set, mode is ignored (historical snapshots are raw DB rows).',
+            },
+            mode: {
+              type: 'string',
+              enum: ['lazy', 'bundle'],
+              description:
+                "F4: how to resolve composed protocols. 'lazy' (default) returns the boot section + skill manifest; agent fetches skill bodies via haops_read_skill. 'bundle' returns the full composed markdown in one shot. Ignored for legacy projects.",
             },
           },
           required: ['projectSlug', 'role'],
@@ -1801,7 +1814,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_read_skill',
-        description: 'Read a single skill by its kebab-case name. Returns full markdown content + metadata (category, applicableRoles, version, isDeprecated). Use this after haops_list_skills to fetch the actual instructions.',
+        description:
+          'Read a single skill by its kebab-case name. Returns full markdown content + metadata (category, applicableRoles, version, isDeprecated). Use this after haops_list_skills — or after a haops_read_protocol(mode="lazy") response\'s skillRefs[] manifest — to fetch the actual instructions on demand.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1817,6 +1831,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             projectSlug: {
               type: 'string',
               description: 'Project slug — required when scope="project".',
+            },
+            version: {
+              type: 'number',
+              description:
+                'F4 (v2.6): specific version number to read. If omitted, returns the current version. Used by lazy-loaded composed protocols to fetch a pinned version of a skill body.',
             },
           },
           required: ['name'],
@@ -4387,29 +4406,134 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_read_protocol') {
     try {
-      const { projectSlug, role, version } = args as {
+      const { projectSlug, role, version, mode } = args as {
         projectSlug: string;
         role: string;
         version?: number;
+        mode?: 'lazy' | 'bundle';
       };
 
-      const result = await apiClient.readProtocol(projectSlug, role, version);
+      // Default to lazy when no mode is given AND no historical version is
+      // requested. When a version is requested we leave mode undefined so the
+      // server returns the raw historical shape.
+      const effectiveMode: 'lazy' | 'bundle' | undefined =
+        version !== undefined
+          ? undefined
+          : (mode ?? 'lazy');
 
-      // Format for readability — show content as markdown, not JSON
-      const lines = [
+      const result = await apiClient.readProtocol(
+        projectSlug,
+        role,
+        version,
+        effectiveMode,
+      );
+
+      // F4: the response shape depends on the resolver mode. We render each
+      // shape into the same human-readable text envelope so the agent gets
+      // consistent framing, but the body/manifest layout differs.
+      const protocolMode = (result.mode as string | undefined) ?? 'legacy';
+      const bytes = (result.bytes as number | undefined) ?? 0;
+      const versionStr = String(result.version ?? 'N/A');
+
+      const headerLines: string[] = [
         `Protocol for role "${role}" in project "${projectSlug}":`,
-        `Version: ${result.version || 'N/A'}`,
-        `Updated: ${result.createdAt || 'N/A'}`,
-        result.updatedByKey ? `Updated by: ${result.updatedByKey}` : '',
-        result.changeSummary ? `Change summary: ${result.changeSummary}` : '',
-        '',
-        '---',
-        '',
-        (result.content as string) || '(empty)',
-      ].filter(Boolean);
+      ];
+
+      if (protocolMode === 'legacy') {
+        // Legacy rendering — byte-identical to v2.5 so existing agents +
+        // hand-written snapshots keep matching. Order: Version → Updated →
+        // (optional Updated by) → (optional Change summary) → '' → '---' → ''
+        // → content.
+        headerLines.push(`Version: ${versionStr}`);
+        headerLines.push(`Updated: ${result.createdAt || 'N/A'}`);
+        if (result.updatedByKey) headerLines.push(`Updated by: ${result.updatedByKey}`);
+        if (result.changeSummary) headerLines.push(`Change summary: ${result.changeSummary}`);
+        headerLines.push('');
+        headerLines.push('---');
+        headerLines.push('');
+        headerLines.push(
+          (result.body as string) ?? (result.content as string) ?? '(empty)',
+        );
+
+        return {
+          content: [{ type: 'text', text: headerLines.filter((l) => l !== undefined).join('\n') }],
+        };
+      }
+
+      // Composed rendering — new in F4. We add Mode + Bytes for visibility
+      // since these shapes are unfamiliar to agents seeing them for the first
+      // time. Warnings render before the body so the agent sees them upfront.
+      headerLines.push(`Mode: ${protocolMode}`);
+      headerLines.push(`Version: ${versionStr}`);
+      if (bytes) headerLines.push(`Bytes: ${bytes}`);
+      if (result.updatedByKey) headerLines.push(`Updated by: ${result.updatedByKey}`);
+      if (result.changeSummary) headerLines.push(`Change summary: ${result.changeSummary}`);
+
+      const warnings = result.warnings as string[] | undefined;
+      if (warnings && warnings.length > 0) {
+        headerLines.push('');
+        headerLines.push('Warnings:');
+        for (const w of warnings) headerLines.push(`  - ${w}`);
+      }
+
+      if (protocolMode === 'composed-lazy') {
+        // Lazy: show coreContent + manifest. Agent fetches skill bodies via
+        // haops_read_skill on demand.
+        const skillRefs = (result.skillRefs as Array<Record<string, unknown>> | undefined) ?? [];
+        headerLines.push('');
+        headerLines.push(`Skill manifest (${skillRefs.length} skills — use haops_read_skill to fetch bodies):`);
+        for (const ref of skillRefs) {
+          const flags: string[] = [];
+          if (ref.required) flags.push('REQUIRED');
+          if (ref.deprecated) flags.push('DEPRECATED');
+          if (ref.missing) flags.push('MISSING');
+          if (ref.shadowedSystemId) flags.push('shadows-system');
+          const flagStr = flags.length ? ` [${flags.join(', ')}]` : '';
+          headerLines.push(
+            `  - ${ref.name as string} (${ref.scope as string} v${ref.version})${flagStr}`,
+          );
+        }
+        headerLines.push('');
+        headerLines.push('--- Core protocol (boot section + customContent) ---');
+        headerLines.push('');
+        headerLines.push((result.coreContent as string) || '(empty)');
+      } else if (protocolMode === 'composed-bundle') {
+        // Bundle: full composed body. Manifest also returned for transparency.
+        const skillRefs = (result.skillRefs as Array<Record<string, unknown>> | undefined) ?? [];
+        headerLines.push('');
+        headerLines.push(`Composed from ${skillRefs.length} skills (manifest below body)`);
+        headerLines.push('');
+        headerLines.push('--- Composed protocol body ---');
+        headerLines.push('');
+        headerLines.push((result.body as string) || '(empty)');
+        if (skillRefs.length > 0) {
+          headerLines.push('');
+          headerLines.push('--- Manifest ---');
+          for (const ref of skillRefs) {
+            const flags: string[] = [];
+            if (ref.required) flags.push('REQUIRED');
+            if (ref.deprecated) flags.push('DEPRECATED');
+            if (ref.missing) flags.push('MISSING');
+            if (ref.shadowedSystemId) flags.push('shadows-system');
+            const flagStr = flags.length ? ` [${flags.join(', ')}]` : '';
+            headerLines.push(
+              `  - ${ref.name as string} (${ref.scope as string} v${ref.version})${flagStr}`,
+            );
+          }
+        }
+      } else {
+        // Unknown mode (forward-compat) — render whatever body we got and tag
+        // it so we notice if the server ships a new mode without an MCP bump.
+        headerLines.push('');
+        headerLines.push(`(unknown protocol mode "${protocolMode}" — rendering body verbatim)`);
+        headerLines.push('');
+        headerLines.push(
+          (result.body as string) ?? (result.content as string) ?? '(empty)',
+        );
+      }
 
       return {
-        content: [{ type: 'text', text: lines.join('\n') }],
+        content: [{ type: 'text', text: headerLines.filter((l) => l !== undefined).join('\n') }],
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -4533,13 +4657,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_read_skill') {
     try {
-      const { name: skillName, scope, projectSlug } = args as {
+      const { name: skillName, scope, projectSlug, version } = args as {
         name: string;
         scope?: 'system' | 'project';
         projectSlug?: string;
+        version?: number;
       };
 
-      const skill = await apiClient.readSkill(skillName, { scope, projectSlug });
+      const skill = await apiClient.readSkill(skillName, { scope, projectSlug, version });
 
       const roles = Array.isArray(skill.applicableRoles)
         ? (skill.applicableRoles as string[]).join(', ')

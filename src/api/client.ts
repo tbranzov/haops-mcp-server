@@ -1476,14 +1476,34 @@ export class HAOpsApiClient {
 
   // ===== Protocol Methods =====
 
+  /**
+   * Read a project's protocol for a given role.
+   *
+   * F4 (v2.6) additions:
+   *   - `mode`: 'lazy' | 'bundle'. Legacy projects (templateId IS NULL) ignore
+   *     this parameter and always return the byte-identical legacy shape.
+   *     Composed projects return:
+   *       - 'lazy'   (default) → `{ mode: 'composed-lazy', body: '', coreContent,
+   *                                  skillRefs, warnings?, version, bytes }`
+   *       - 'bundle'           → `{ mode: 'composed-bundle', body, skillRefs,
+   *                                  warnings?, version, bytes }`
+   *   - `version`: existing behaviour — when set, returns that historical row
+   *     (raw DB shape, predates composed mode; mode/bundle params ignored).
+   */
   async readProtocol(
     projectSlug: string,
     role: string,
     version?: number,
+    mode?: 'lazy' | 'bundle',
   ): Promise<Record<string, unknown>> {
     try {
       let query = `?role=${encodeURIComponent(role)}`;
       if (version !== undefined) query += `&version=${version}`;
+      // mode is irrelevant when a specific version is requested (historical
+      // snapshots predate composed mode), so we only translate when no version
+      // is given. 'bundle' → ?bundle=true; 'lazy' is the default of the server
+      // route so no extra param needed.
+      if (version === undefined && mode === 'bundle') query += `&bundle=true`;
       const response = await this.axios.get<Record<string, unknown>>(
         `/api/projects/${projectSlug}/protocol${query}`,
       );
@@ -1581,15 +1601,25 @@ export class HAOpsApiClient {
    *
    * scope defaults to 'system'. For project-scoped skills, pass
    * scope='project' + projectSlug.
+   *
+   * F4 (v2.6) addition:
+   *   - `version`: when set, returns that historical version of the skill
+   *     (paranoid:false on the server so soft-deleted versions are reachable).
+   *     Used by composed-protocol lazy mode to fetch a specific pinned version.
    */
   async readSkill(
     name: string,
-    opts: { scope?: 'system' | 'project'; projectSlug?: string } = {},
+    opts: {
+      scope?: 'system' | 'project';
+      projectSlug?: string;
+      version?: number;
+    } = {},
   ): Promise<Record<string, unknown>> {
     try {
       const params = new URLSearchParams();
       if (opts.scope) params.set('scope', opts.scope);
       if (opts.projectSlug) params.set('projectSlug', opts.projectSlug);
+      if (opts.version !== undefined) params.set('version', String(opts.version));
       const query = params.toString();
       const response = await this.axios.get<Record<string, unknown>>(
         `/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`,
