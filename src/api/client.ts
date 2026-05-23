@@ -1682,6 +1682,46 @@ export class HAOpsApiClient {
     }
   }
 
+  // ===== Skill Pack Tools (F7) =====
+
+  /**
+   * List skill packs visible to the caller. Skill packs are curated bundles
+   * of skill IDs (Helpdesk / Security / Mobile / etc.) that owners adopt at
+   * project onboarding to pre-enable a coherent skill set in one click.
+   *
+   * Filters mirror the GET /api/skill-packs query parameters; defensively
+   * unwraps the {items, total, ...} pagination envelope when present so the
+   * MCP tool always sees a bare array.
+   *
+   * Read works regardless of ENABLE_COMPOSED_PROTOCOLS — packs are
+   * inspection-only on this surface. Mutations live on the web admin (the
+   * MCP server intentionally does not expose POST/PUT/DELETE for editorial
+   * assets — DECISIONS C1).
+   */
+  async listSkillPacks(
+    opts: {
+      featured?: boolean;
+      category?: string;
+      search?: string;
+    } = {},
+  ): Promise<Array<Record<string, unknown>>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.featured) params.set('featured', 'true');
+      if (opts.category) params.set('category', opts.category);
+      if (opts.search) params.set('search', opts.search);
+      const query = params.toString();
+      const response = await this.axios.get<
+        Array<Record<string, unknown>> | { items: Array<Record<string, unknown>> }
+      >(`/api/skill-packs${query ? `?${query}` : ''}`);
+      const data = response.data;
+      if (Array.isArray(data)) return data;
+      return Array.isArray(data.items) ? data.items : [];
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   // ===== Testing MCP Tools =====
 
   async reportTestRun(

@@ -1876,6 +1876,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
 
+      // ===== Skill Pack Tools (F7) =====
+      {
+        name: 'haops_list_skill_packs',
+        description:
+          'List skill packs — curated bundles of agent skills (e.g. helpdesk-pack, security-pack, mobile-pack) that owners adopt at project onboarding. Each pack groups related skill IDs under a category; the onboarding wizard pre-enables them in one click. System packs are seeded and cannot be deleted. Read-only on the MCP surface; mutations go through the web admin.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            featured: {
+              type: 'boolean',
+              description: 'Only return packs flagged as featured (the curated set surfaced in onboarding by default).',
+            },
+            category: {
+              type: 'string',
+              enum: ['helpdesk', 'security', 'mobile', 'testing', 'communication', 'deployment', 'other'],
+              description: 'Filter by pack category.',
+            },
+            search: {
+              type: 'string',
+              description: 'Free-text search across name + description (case-insensitive).',
+            },
+          },
+        },
+      },
+
       // ===== Testing MCP Tools =====
 
       {
@@ -4778,6 +4803,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error reading role template: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // ===== Skill Pack Tool Implementations (F7) =====
+
+  if (name === 'haops_list_skill_packs') {
+    try {
+      const opts = args as { featured?: boolean; category?: string; search?: string };
+      const packs = await apiClient.listSkillPacks(opts);
+
+      if (packs.length === 0) {
+        return {
+          content: [{ type: 'text', text: 'No skill packs found for the given filters.' }],
+        };
+      }
+
+      // One line per pack — name, category, system flag, featured flag,
+      // skillCount, short description tail. Skill IDs themselves are NOT
+      // hydrated server-side on the list endpoint (mirrors role-templates
+      // pattern); agents can call GET /api/skill-packs/[name] via the admin
+      // UI for hydration. Keeps the MCP response under any reasonable
+      // context budget even when there are 50+ packs in the catalogue.
+      const lines = [`Found ${packs.length} skill pack(s):`, ''];
+      for (const p of packs) {
+        const cat = (p.category as string) ?? 'unknown';
+        const system = p.isSystem ? ' [system]' : '';
+        const featured = p.isFeatured ? ' [featured]' : '';
+        const skillIds = Array.isArray(p.skillIds) ? (p.skillIds as unknown[]).length : 0;
+        const desc = p.description ? ` — ${p.description as string}` : '';
+        lines.push(`- ${p.name as string} (${cat})${featured}${system} skills=${skillIds}${desc}`);
+      }
+
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error listing skill packs: ${message}` }],
         isError: true,
       };
     }
