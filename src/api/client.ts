@@ -1526,6 +1526,80 @@ export class HAOpsApiClient {
     }
   }
 
+  // ===== Skills Library Methods (F1) =====
+
+  /**
+   * List system + (optionally) project-scoped skills.
+   *
+   * Filters:
+   *   - scope: 'system' | 'project' (default: combined when projectSlug given,
+   *            system-only otherwise — server enforces)
+   *   - category: review | planning | testing | deployment | communication |
+   *               memory | safety | other
+   *   - role: agent role name; matches skills whose applicableRoles includes
+   *           that role or the '*' wildcard
+   *   - projectSlug: required for scope='project'; combines with no-scope to
+   *                  broaden the search
+   *   - includeDeprecated: include is_deprecated rows (default: off)
+   */
+  async listSkills(
+    opts: {
+      scope?: 'system' | 'project';
+      category?: string;
+      role?: string;
+      projectSlug?: string;
+      search?: string;
+      includeDeprecated?: boolean;
+    } = {},
+  ): Promise<Array<Record<string, unknown>>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.scope) params.set('scope', opts.scope);
+      if (opts.category) params.set('category', opts.category);
+      if (opts.role) params.set('role', opts.role);
+      if (opts.projectSlug) params.set('projectSlug', opts.projectSlug);
+      if (opts.search) params.set('search', opts.search);
+      if (opts.includeDeprecated) params.set('includeDeprecated', 'true');
+
+      const query = params.toString();
+      const response = await this.axios.get<
+        Array<Record<string, unknown>> | { items: Array<Record<string, unknown>> }
+      >(`/api/skills${query ? `?${query}` : ''}`);
+      // The endpoint returns a flat array unless page/limit is set. The MCP
+      // shape is always a flat array — we don't expose pagination here since
+      // agents iterate skills once at boot, not paginate through them.
+      const data = response.data;
+      if (Array.isArray(data)) return data;
+      return Array.isArray(data.items) ? data.items : [];
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Read a single skill by its kebab-case name.
+   *
+   * scope defaults to 'system'. For project-scoped skills, pass
+   * scope='project' + projectSlug.
+   */
+  async readSkill(
+    name: string,
+    opts: { scope?: 'system' | 'project'; projectSlug?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.scope) params.set('scope', opts.scope);
+      if (opts.projectSlug) params.set('projectSlug', opts.projectSlug);
+      const query = params.toString();
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   // ===== Testing MCP Tools =====
 
   async reportTestRun(

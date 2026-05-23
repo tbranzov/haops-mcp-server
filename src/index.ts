@@ -1763,6 +1763,66 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
 
+      // ===== Skills Library Tools (F1) =====
+      {
+        name: 'haops_list_skills',
+        description: 'List agent skills (system-wide + optionally project-scoped). Skills are reusable, role-tagged knowledge units (e.g. "out-of-scope-findings", "three-layer-boot") that compose into agent protocols. Filter by scope, category, role, project, or free-text search. Deprecated skills are excluded by default.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            scope: {
+              type: 'string',
+              enum: ['system', 'project'],
+              description: 'Filter by scope. Omit to combine system + project (when projectSlug given) or default to system-only.',
+            },
+            category: {
+              type: 'string',
+              enum: ['review', 'planning', 'testing', 'deployment', 'communication', 'memory', 'safety', 'other'],
+              description: 'Filter by skill category.',
+            },
+            role: {
+              type: 'string',
+              description: 'Filter by applicable role (architect/dev/qa/devops). Matches skills whose applicableRoles includes the role OR the "*" wildcard.',
+            },
+            projectSlug: {
+              type: 'string',
+              description: 'Project slug for scope="project" (required when scope=project; widens search when scope omitted).',
+            },
+            search: {
+              type: 'string',
+              description: 'Free-text search across name + description.',
+            },
+            includeDeprecated: {
+              type: 'boolean',
+              description: 'Include deprecated skills (default: false).',
+            },
+          },
+        },
+      },
+      {
+        name: 'haops_read_skill',
+        description: 'Read a single skill by its kebab-case name. Returns full markdown content + metadata (category, applicableRoles, version, isDeprecated). Use this after haops_list_skills to fetch the actual instructions.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case skill name (e.g. "out-of-scope-findings").',
+            },
+            scope: {
+              type: 'string',
+              enum: ['system', 'project'],
+              description: 'Scope to look in. Defaults to "system".',
+            },
+            projectSlug: {
+              type: 'string',
+              description: 'Project slug — required when scope="project".',
+            },
+          },
+          required: ['name'],
+        },
+      },
+
       // ===== Testing MCP Tools =====
 
       {
@@ -4383,6 +4443,94 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error listing protocol versions: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // ===== Skills Library Tool Handlers (F1) =====
+
+  if (name === 'haops_list_skills') {
+    try {
+      const opts = args as {
+        scope?: 'system' | 'project';
+        category?: string;
+        role?: string;
+        projectSlug?: string;
+        search?: string;
+        includeDeprecated?: boolean;
+      };
+
+      const skills = await apiClient.listSkills(opts);
+
+      if (skills.length === 0) {
+        return {
+          content: [{ type: 'text', text: 'No skills found for the given filters.' }],
+        };
+      }
+
+      // One line per skill — name, scope, category, applicable roles, deprecated flag.
+      // The full content is fetched on demand via haops_read_skill so we don't blow
+      // the agent's context window on every list.
+      const lines = [`Found ${skills.length} skill(s):`, ''];
+      for (const s of skills) {
+        const scope = s.scope as string;
+        const category = s.category as string;
+        const roles = Array.isArray(s.applicableRoles)
+          ? (s.applicableRoles as string[]).join(', ')
+          : 'unknown';
+        const dep = s.isDeprecated ? ' [DEPRECATED]' : '';
+        const ver = s.version ? ` v${s.version}` : '';
+        const desc = s.description ? ` — ${s.description}` : '';
+        lines.push(`- ${s.name as string} (${scope}/${category}${ver}) roles=[${roles}]${dep}${desc}`);
+      }
+
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error listing skills: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_read_skill') {
+    try {
+      const { name: skillName, scope, projectSlug } = args as {
+        name: string;
+        scope?: 'system' | 'project';
+        projectSlug?: string;
+      };
+
+      const skill = await apiClient.readSkill(skillName, { scope, projectSlug });
+
+      const roles = Array.isArray(skill.applicableRoles)
+        ? (skill.applicableRoles as string[]).join(', ')
+        : 'unknown';
+      const header = [
+        `Skill: ${skill.name as string}`,
+        `Scope: ${skill.scope as string}`,
+        `Category: ${skill.category as string}`,
+        `Version: ${skill.version ?? 'N/A'}`,
+        `Applicable roles: ${roles}`,
+        skill.isDeprecated ? 'Status: DEPRECATED' : '',
+        skill.description ? `Description: ${skill.description as string}` : '',
+        '',
+        '---',
+        '',
+        (skill.content as string) || '(empty)',
+      ].filter(Boolean);
+
+      return {
+        content: [{ type: 'text', text: header.join('\n') }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error reading skill: ${message}` }],
         isError: true,
       };
     }
