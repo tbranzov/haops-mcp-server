@@ -8,7 +8,7 @@
  *   list_modules, get_module, create_module, update_module, delete_module
  *   list_features, get_feature, create_feature, delete_feature
  *   list_issues, get_issue, create_issue, delete_issue
- *   get_project_tree, get_structured_view
+ *   get_structured_view
  *
  * Requirements: HAOps running at HAOPS_API_URL with valid HAOPS_API_KEY.
  * If unavailable, all tests skip gracefully.
@@ -238,15 +238,6 @@ describe('create_issue + delete_issue', () => {
 });
 
 // ── Project views ─────────────────────────────────────────────────────────────
-
-describe('get_project_tree — GET /api/projects/[slug]/tree', () => {
-  it('returns 200 with project tree shape', async () => {
-    if (!haopsAvailable) return;
-    const { status, body } = await haopsGet(`/api/projects/${HAOPS_PROJECT_SLUG}/tree`);
-    expect(status).toBe(200);
-    validateAndSnapshotShape(body, 'get_project_tree response');
-  });
-});
 
 describe('get_structured_view — GET /api/projects/[slug]/teamwork/structured', () => {
   it('returns 200 with structured view shape', async () => {

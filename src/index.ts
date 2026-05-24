@@ -2423,18 +2423,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['projectSlug', 'issueId'],
         },
       },
-      // ===== Project Tree =====
-      {
-        name: 'haops_get_project_tree',
-        description: 'Returns the COMPLETE work hierarchy for a project in flat arrays (modules, features, issues). Use this for a quick project overview instead of calling list_modules + list_features + list_issues separately.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
-          },
-          required: ['projectSlug'],
-        },
-      },
       // ===== Teamwork Views =====
       {
         name: 'haops_get_structured_view',
@@ -5739,19 +5727,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error getting issue: ${message}` }], isError: true };
-    }
-  }
-
-  // ===== Project Tree =====
-
-  if (name === 'haops_get_project_tree') {
-    try {
-      const { projectSlug } = args as { projectSlug: string };
-      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/tree`);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return { content: [{ type: 'text', text: `Error getting project tree: ${message}` }], isError: true };
     }
   }
 
