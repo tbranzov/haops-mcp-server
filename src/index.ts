@@ -1399,7 +1399,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_update_doc_section',
-        description: 'Update a documentation section content, title, or source hint.',
+        description: 'Update a documentation section content, title, slug, or source hint.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1413,7 +1413,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             sectionSlug: {
               type: 'string',
-              description: 'The section slug',
+              description: 'The current section slug (used to locate the row)',
             },
             title: {
               type: 'string',
@@ -1426,6 +1426,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             sourceHint: {
               type: 'string',
               description: 'New source hint (optional)',
+            },
+            slug: {
+              type: 'string',
+              description: 'New slug (optional). Must be unique among siblings under the same parent within the artifact; returns 409 on collision. Note: cannot address a section whose current slug is empty — fix that at the DB layer first.',
             },
           },
           required: ['projectSlug', 'artifactSlug', 'sectionSlug'],
@@ -4134,13 +4138,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_update_doc_section') {
     try {
-      const { projectSlug, artifactSlug, sectionSlug, title, content, sourceHint } = args as {
-        projectSlug: string; artifactSlug: string; sectionSlug: string; title?: string; content?: string; sourceHint?: string;
+      const { projectSlug, artifactSlug, sectionSlug, title, content, sourceHint, slug } = args as {
+        projectSlug: string; artifactSlug: string; sectionSlug: string; title?: string; content?: string; sourceHint?: string; slug?: string;
       };
       const body: Record<string, unknown> = {};
       if (title !== undefined) body.title = title;
       if (content !== undefined) body.content = content;
       if (sourceHint !== undefined) body.sourceHint = sourceHint;
+      if (slug !== undefined) body.slug = slug;
       const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/docs/${artifactSlug}/sections/${sectionSlug}`, body);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
