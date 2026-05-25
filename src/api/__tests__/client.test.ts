@@ -153,4 +153,66 @@ describe('HAOpsApiClient', () => {
       expect((result as { id?: string }).id).toBe('m1');
     });
   });
+
+  // Coverage for the F1/F4 Agent Skills client method. The URL shape is
+  // /api/skills/{name} with scope, projectSlug, and version flowing through
+  // query parameters (the server route uses query disambiguation, not a
+  // separate /api/projects/[slug]/skills/[name] mount).
+  describe('readSkill', () => {
+    it('should read a system-scope skill with no options', async () => {
+      const mockSkill = { id: 's1', name: 'foo', scope: 'system', version: 1 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.get.mockResolvedValue({ data: mockSkill });
+
+      const result = await client.readSkill('foo');
+
+      expect(axiosInstance.get).toHaveBeenCalledWith('/api/skills/foo');
+      expect(result).toEqual(mockSkill);
+    });
+
+    it('should read a project-scope skill with scope + projectSlug query params', async () => {
+      const mockSkill = { id: 's2', name: 'foo', scope: 'project', version: 1 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.get.mockResolvedValue({ data: mockSkill });
+
+      const result = await client.readSkill('foo', {
+        scope: 'project',
+        projectSlug: 'bar',
+      });
+
+      expect(axiosInstance.get).toHaveBeenCalledWith(
+        '/api/skills/foo?scope=project&projectSlug=bar',
+      );
+      expect(result).toEqual(mockSkill);
+    });
+
+    it('should pin a specific version via ?version', async () => {
+      const mockSkill = { id: 's3', name: 'foo', scope: 'system', version: 3 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.get.mockResolvedValue({ data: mockSkill });
+
+      const result = await client.readSkill('foo', { version: 3 });
+
+      expect(axiosInstance.get).toHaveBeenCalledWith('/api/skills/foo?version=3');
+      expect(result).toEqual(mockSkill);
+    });
+
+    it('should throw HAOpsApiError on 404', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      const error = {
+        isAxiosError: true,
+        response: {
+          status: 404,
+          data: { error: 'Skill not found' },
+        },
+        message: 'Request failed with status code 404',
+      };
+      (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+        .fn()
+        .mockReturnValue(true);
+      axiosInstance.get.mockRejectedValue(error);
+
+      await expect(client.readSkill('nonexistent')).rejects.toThrow(HAOpsApiError);
+    });
+  });
 });
