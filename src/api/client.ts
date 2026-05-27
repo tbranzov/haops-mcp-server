@@ -1518,10 +1518,20 @@ export class HAOpsApiClient {
     role: string,
     content: string,
     changeSummary?: string,
+    templateId?: string | null,
+    skillsConfig?: {
+      enabledSkillIds?: string[];
+      disabledSkillIds?: string[];
+      customContent?: string | null;
+    } | null,
   ): Promise<Record<string, unknown>> {
     try {
       const body: Record<string, unknown> = { role, content };
       if (changeSummary) body.changeSummary = changeSummary;
+      // F3 composed-protocol fields — only include when explicitly provided so
+      // the server's carry-forward logic applies when they are omitted.
+      if (templateId !== undefined) body.templateId = templateId;
+      if (skillsConfig !== undefined) body.skillsConfig = skillsConfig;
       const response = await this.axios.put<Record<string, unknown>>(
         `/api/projects/${projectSlug}/protocol`,
         body,

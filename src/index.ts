@@ -1737,7 +1737,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_update_protocol',
-        description: 'Update (create new version of) the work protocol for a specific agent role in a project. Creates a new version and marks the previous as historical. Architect and admin roles ONLY.',
+        description: 'Update (create new version of) the work protocol for a specific agent role in a project. Creates a new version and marks the previous as historical. Architect and admin roles ONLY.\n\nF3 composed-protocol fields (ENABLE_COMPOSED_PROTOCOLS must be ON):\n  • templateId — UUID of a RoleTemplate to associate, or null to detach. Omit to carry forward current value.\n  • skillsConfig — override which skills are active and inject custom content. Omit to carry forward. Set to null to clear.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1756,6 +1756,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             changeSummary: {
               type: 'string',
               description: 'Optional summary of what changed in this version',
+            },
+            templateId: {
+              type: ['string', 'null'],
+              description: 'F3: UUID of the RoleTemplate to associate with this protocol slot, or null to detach. When omitted the server carries forward the current value.',
+            },
+            skillsConfig: {
+              type: ['object', 'null'],
+              description: 'F3: Override active skills and custom content. Omit to carry forward; set to null to clear entirely.',
+              properties: {
+                enabledSkillIds: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'UUIDs of non-default skills to force-enable. Must reference existing, non-deprecated skills.',
+                },
+                disabledSkillIds: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'UUIDs of default skills to suppress. Cannot include required skills.',
+                },
+                customContent: {
+                  type: ['string', 'null'],
+                  description: 'Freeform markdown appended after the last skill section in composed mode.',
+                },
+              },
             },
           },
           required: ['projectSlug', 'role', 'content'],
@@ -4486,6 +4510,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (bytes) headerLines.push(`Bytes: ${bytes}`);
       if (result.updatedByKey) headerLines.push(`Updated by: ${result.updatedByKey}`);
       if (result.changeSummary) headerLines.push(`Change summary: ${result.changeSummary}`);
+      // F3 raw fields — surface templateId + skillsConfig so callers can compute
+      // precise deltas (e.g. composed-mode refresh workflows that need the current
+      // enabledSkillIds/disabledSkillIds before issuing an update_protocol call).
+      if (result.templateId != null) headerLines.push(`Template ID: ${result.templateId as string}`);
+      const sc = result.skillsConfig as Record<string, unknown> | null | undefined;
+      if (sc != null) {
+        const enabled = (sc.enabledSkillIds as string[] | undefined) ?? [];
+        const disabled = (sc.disabledSkillIds as string[] | undefined) ?? [];
+        const custom = sc.customContent as string | undefined;
+        if (enabled.length > 0) headerLines.push(`Skills enabled: ${enabled.join(', ')}`);
+        if (disabled.length > 0) headerLines.push(`Skills disabled: ${disabled.join(', ')}`);
+        if (custom) headerLines.push(`Custom content: (present, ${custom.length} chars)`);
+      }
 
       const warnings = result.warnings as string[] | undefined;
       if (warnings && warnings.length > 0) {
@@ -4564,14 +4601,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_update_protocol') {
     try {
-      const { projectSlug, role, content, changeSummary } = args as {
+      const { projectSlug, role, content, changeSummary, templateId, skillsConfig } = args as {
         projectSlug: string;
         role: string;
         content: string;
         changeSummary?: string;
+        templateId?: string | null;
+        skillsConfig?: {
+          enabledSkillIds?: string[];
+          disabledSkillIds?: string[];
+          customContent?: string | null;
+        } | null;
       };
 
-      const result = await apiClient.updateProtocol(projectSlug, role, content, changeSummary);
+      const result = await apiClient.updateProtocol(
+        projectSlug,
+        role,
+        content,
+        changeSummary,
+        templateId,
+        skillsConfig,
+      );
 
       return {
         content: [{ type: 'text', text: `Protocol updated successfully.\nRole: ${role}\nVersion: ${result.version}\nID: ${result.id}` }],
