@@ -1869,6 +1869,118 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['name'],
         },
       },
+      {
+        name: 'haops_create_skill',
+        description:
+          'Create a new agent skill (system or project-scoped). Inserts version=1 with isCurrent=true. Admin-only on the server, gated by ENABLE_COMPOSED_PROTOCOLS. Returns the new skill row on success; 409 if a skill with the same name already exists in the target scope (use haops_update_skill to publish a new version instead).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            scope: {
+              type: 'string',
+              enum: ['system', 'project'],
+              description: 'Scope of the new skill. "system" omits projectSlug; "project" requires it.',
+            },
+            name: {
+              type: 'string',
+              description: 'Kebab-case skill name (1..100 chars, starts with a letter, e.g. "out-of-scope-findings").',
+            },
+            description: {
+              type: 'string',
+              description: 'Short one-line description of what the skill teaches (shown in list views and template pickers).',
+            },
+            content: {
+              type: 'string',
+              description: 'Full markdown body of the skill (admin-trusted; no sanitization applied server-side).',
+            },
+            category: {
+              type: 'string',
+              enum: ['review', 'planning', 'testing', 'deployment', 'communication', 'memory', 'safety', 'resilience', 'git', 'database', 'other'],
+              description: 'Skill category for grouping in the catalogue.',
+            },
+            applicableRoles: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Roles the skill applies to. Non-empty array of {architect, dev, qa, devops} or the wildcard ["*"].',
+            },
+            projectSlug: {
+              type: 'string',
+              description: 'Project slug — REQUIRED when scope="project"; MUST be omitted when scope="system".',
+            },
+          },
+          required: ['scope', 'name', 'description', 'content', 'category', 'applicableRoles'],
+        },
+      },
+      {
+        name: 'haops_update_skill',
+        description:
+          'Publish a new version of an existing skill (PUT /api/skills/[name]). Server bumps version in a single transaction. A no-op update (no field differs from current) returns the current row WITHOUT a version bump (mirrors prompt PATCH semantics). At least one mutable field must be supplied. Admin-only, gated by ENABLE_COMPOSED_PROTOCOLS.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case skill name to update.',
+            },
+            scope: {
+              type: 'string',
+              enum: ['system', 'project'],
+              description: 'Scope of the target skill. Defaults to "system".',
+            },
+            projectSlug: {
+              type: 'string',
+              description: 'Project slug — REQUIRED when scope="project"; MUST be omitted when scope="system".',
+            },
+            description: {
+              type: 'string',
+              description: 'New description (non-empty).',
+            },
+            content: {
+              type: 'string',
+              description: 'New markdown body (non-empty).',
+            },
+            category: {
+              type: 'string',
+              enum: ['review', 'planning', 'testing', 'deployment', 'communication', 'memory', 'safety', 'resilience', 'git', 'database', 'other'],
+              description: 'New skill category.',
+            },
+            applicableRoles: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'New applicable roles list.',
+            },
+            isDeprecated: {
+              type: 'boolean',
+              description: 'Mark the skill as deprecated (the resolver hides deprecated skills from default manifests, but they remain readable).',
+            },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'haops_deprecate_skill',
+        description:
+          'Soft-delete + deprecate a skill (DELETE /api/skills/[name]). Cascades the soft-delete across ALL versions (current + historical) and flips isDeprecated=true on the current row. History remains visible via /api/skills/[name]/history for audit context. Admin-only, gated by ENABLE_COMPOSED_PROTOCOLS. Returns {message, versionCount}.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case skill name to soft-delete.',
+            },
+            scope: {
+              type: 'string',
+              enum: ['system', 'project'],
+              description: 'Scope of the target skill. Defaults to "system".',
+            },
+            projectSlug: {
+              type: 'string',
+              description: 'Project slug — REQUIRED when scope="project"; MUST be omitted when scope="system".',
+            },
+          },
+          required: ['name'],
+        },
+      },
 
       // ===== Role Template Tools (F2) =====
       {
@@ -4758,6 +4870,171 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error reading skill: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // ===== Skills Library Mutation Handlers (P1·I1) =====
+  //
+  // Server-side notes (mirrored from app/api/skills/{route.ts,[name]/route.ts}):
+  //   - Admin-only — non-admin API keys get 403.
+  //   - Feature-flagged via ENABLE_COMPOSED_PROTOCOLS. When OFF, the routes
+  //     return a bare {error:'Not found'} 404 by design ("looks absent"). We
+  //     detect that specific shape and rewrite the message so the agent gets a
+  //     useful hint instead of a generic 404 ("did I typo the skill name?").
+  //   - PUT diffs against the current row and returns the current row WITHOUT a
+  //     version bump when nothing changed (noop). We mirror that signal by
+  //     showing the returned version in the success message.
+  //   - DELETE soft-cascades across all versions and returns {message,versionCount}.
+
+  const formatSkillMutationError = (error: unknown, action: string): string => {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    // The flag-off 404 has the exact body `{error:'Not found'}`, surfaced as the
+    // message 'Not found' by HAOpsApiClient.handleError. Treat that as a hint.
+    if (msg === 'Not found') {
+      return `Error ${action}: Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Ask the admin to enable it before retrying.`;
+    }
+    return `Error ${action}: ${msg}`;
+  };
+
+  if (name === 'haops_create_skill') {
+    try {
+      const {
+        scope,
+        name: skillName,
+        description,
+        content,
+        category,
+        applicableRoles,
+        projectSlug,
+      } = args as {
+        scope: 'system' | 'project';
+        name: string;
+        description: string;
+        content: string;
+        category: string;
+        applicableRoles: string[];
+        projectSlug?: string;
+      };
+
+      const skill = await apiClient.createSkill({
+        scope,
+        name: skillName,
+        description,
+        content,
+        category: category as never, // narrowed by server-side validation
+        applicableRoles,
+        projectSlug,
+      });
+
+      const roles = Array.isArray(skill.applicableRoles)
+        ? (skill.applicableRoles as string[]).join(', ')
+        : 'unknown';
+      const lines = [
+        `Skill created: ${skill.name as string}`,
+        `Scope: ${skill.scope as string}${skill.projectId ? ` (projectId=${skill.projectId as string})` : ''}`,
+        `Category: ${skill.category as string}`,
+        `Version: ${skill.version ?? 1}`,
+        `Applicable roles: ${roles}`,
+        `Skill ID: ${skill.id as string}`,
+      ];
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: formatSkillMutationError(error, 'creating skill') }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_update_skill') {
+    try {
+      const {
+        name: skillName,
+        scope,
+        projectSlug,
+        description,
+        content,
+        category,
+        applicableRoles,
+        isDeprecated,
+      } = args as {
+        name: string;
+        scope?: 'system' | 'project';
+        projectSlug?: string;
+        description?: string;
+        content?: string;
+        category?: string;
+        applicableRoles?: string[];
+        isDeprecated?: boolean;
+      };
+
+      // Build the payload from supplied fields only. The server requires at
+      // least one mutable field — we forward whatever the caller gave us and
+      // let the server diff against the current row to decide noop vs publish.
+      const payload: Record<string, unknown> = {};
+      if (description !== undefined) payload.description = description;
+      if (content !== undefined) payload.content = content;
+      if (category !== undefined) payload.category = category;
+      if (applicableRoles !== undefined) payload.applicableRoles = applicableRoles;
+      if (isDeprecated !== undefined) payload.isDeprecated = isDeprecated;
+
+      const skill = await apiClient.updateSkill(
+        skillName,
+        { scope, projectSlug },
+        payload as never,
+      );
+
+      const roles = Array.isArray(skill.applicableRoles)
+        ? (skill.applicableRoles as string[]).join(', ')
+        : 'unknown';
+      const lines = [
+        `Skill updated: ${skill.name as string}`,
+        `Scope: ${skill.scope as string}`,
+        `Category: ${skill.category as string}`,
+        `Version: ${skill.version ?? 'N/A'} (no version bump = no-op update; new value = published new version)`,
+        `Applicable roles: ${roles}`,
+        skill.isDeprecated ? 'Status: DEPRECATED' : 'Status: active',
+        `Skill ID: ${skill.id as string}`,
+      ];
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: formatSkillMutationError(error, 'updating skill') }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_deprecate_skill') {
+    try {
+      const { name: skillName, scope, projectSlug } = args as {
+        name: string;
+        scope?: 'system' | 'project';
+        projectSlug?: string;
+      };
+
+      const result = await apiClient.deprecateSkill(skillName, { scope, projectSlug });
+
+      const lines = [
+        `Skill deprecated: ${skillName}`,
+        `Scope: ${scope ?? 'system'}${projectSlug ? ` (projectSlug=${projectSlug})` : ''}`,
+        `Soft-deleted ${result.versionCount} version(s) (current + historical).`,
+        `Server message: ${result.message}`,
+        '',
+        'Note: history rows remain readable via /api/skills/[name]/history for audit context.',
+      ];
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: formatSkillMutationError(error, 'deprecating skill') }],
         isError: true,
       };
     }

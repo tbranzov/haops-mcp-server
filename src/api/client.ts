@@ -24,6 +24,9 @@ import type {
   MemoryLogEntry,
   MemoryEntityType,
   MemoryTag,
+  CreateSkillRequest,
+  UpdateSkillRequest,
+  SkillScope,
 } from '../types/entities.js';
 
 interface PaginatedResponse<T> {
@@ -1632,6 +1635,105 @@ export class HAOpsApiClient {
       if (opts.version !== undefined) params.set('version', String(opts.version));
       const query = params.toString();
       const response = await this.axios.get<Record<string, unknown>>(
+        `/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Create a new skill (POST /api/skills).
+   *
+   * Admin-only on the server, feature-flagged behind ENABLE_COMPOSED_PROTOCOLS.
+   * When the flag is off, the route returns a 404 ("looks absent" by design) —
+   * MCP callers should surface that as a user-friendly "Composed protocols
+   * feature is disabled on the server" message rather than the raw 404.
+   *
+   * Body schema mirrors the route handler:
+   *   - scope='system'  → projectSlug must NOT be set
+   *   - scope='project' → projectSlug REQUIRED
+   *   - name: kebab-case (server-validated)
+   *   - description / content: non-empty strings
+   *   - category ∈ SKILL_CATEGORIES
+   *   - applicableRoles ⊆ {architect,dev,qa,devops} ∪ {'*'}
+   *
+   * Server responds 201 with the bare Skill entity (no envelope).
+   */
+  async createSkill(
+    data: CreateSkillRequest,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        '/api/skills',
+        data,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Publish a new version of an existing skill
+   * (PUT /api/skills/[name]?scope=&projectSlug=).
+   *
+   * Admin-only, feature-flagged. The server runs the bump in a transaction —
+   * the current row flips to is_current=false and a new row with version+1 is
+   * inserted. A no-op PUT (no field differs from current) returns the current
+   * row unchanged WITHOUT bumping version (mirrors prompt PATCH semantics).
+   *
+   * `scope` defaults to 'system'. For project-scoped skills pass
+   * scope='project' + projectSlug.
+   */
+  async updateSkill(
+    name: string,
+    opts: {
+      scope?: SkillScope;
+      projectSlug?: string;
+    },
+    data: UpdateSkillRequest,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.scope) params.set('scope', opts.scope);
+      if (opts.projectSlug) params.set('projectSlug', opts.projectSlug);
+      const query = params.toString();
+      const response = await this.axios.put<Record<string, unknown>>(
+        `/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`,
+        data,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Soft-delete + deprecate a skill (DELETE /api/skills/[name]?scope=&projectSlug=).
+   *
+   * Admin-only, feature-flagged. The server cascades the soft-delete across
+   * ALL versions (current + historical) inside a single transaction, and flips
+   * isDeprecated=true on the current row so the resolver excludes it from
+   * future manifests.
+   *
+   * Server response shape: { message: string, versionCount: number }
+   * where versionCount is the number of rows soft-deleted.
+   */
+  async deprecateSkill(
+    name: string,
+    opts: {
+      scope?: SkillScope;
+      projectSlug?: string;
+    } = {},
+  ): Promise<{ message: string; versionCount: number }> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.scope) params.set('scope', opts.scope);
+      if (opts.projectSlug) params.set('projectSlug', opts.projectSlug);
+      const query = params.toString();
+      const response = await this.axios.delete<{ message: string; versionCount: number }>(
         `/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`,
       );
       return response.data;

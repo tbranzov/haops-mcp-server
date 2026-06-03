@@ -284,6 +284,56 @@ export interface AgentMemory {
   meta: MemoryMeta;
 }
 
+// Agent Skills (F1) — composed protocols
+
+export type SkillScope = 'system' | 'project';
+
+export type SkillCategory =
+  | 'review'
+  | 'planning'
+  | 'testing'
+  | 'deployment'
+  | 'communication'
+  | 'memory'
+  | 'safety'
+  | 'resilience'
+  | 'git'
+  | 'database'
+  | 'other';
+
+/**
+ * Request body for POST /api/skills.
+ *
+ * Server validation (mirrored from app/api/skills/route.ts):
+ *   - scope='system'  → projectSlug MUST be omitted
+ *   - scope='project' → projectSlug REQUIRED
+ *   - name: kebab-case (1..100 chars, starts with a letter)
+ *   - applicableRoles: non-empty array of {architect,dev,qa,devops} or ['*']
+ */
+export interface CreateSkillRequest {
+  scope: SkillScope;
+  name: string;
+  description: string;
+  content: string;
+  category: SkillCategory;
+  applicableRoles: string[];
+  projectSlug?: string;
+}
+
+/**
+ * Request body for PUT /api/skills/[name]?scope=&projectSlug=.
+ *
+ * At least one field must be supplied. A no-op PUT (no field differs from the
+ * current row) returns the current row unchanged (200) WITHOUT bumping version.
+ */
+export interface UpdateSkillRequest {
+  description?: string;
+  content?: string;
+  category?: SkillCategory;
+  applicableRoles?: string[];
+  isDeprecated?: boolean;
+}
+
 // Team management entities
 
 export type ProjectMemberRole = 'owner' | 'admin' | 'project_manager' | 'member' | 'viewer';
