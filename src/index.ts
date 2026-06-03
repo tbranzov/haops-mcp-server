@@ -1928,6 +1928,87 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
         },
       },
+      {
+        name: 'haops_create_skill_pack',
+        description:
+          'Create a new skill pack (admin only, requires ENABLE_COMPOSED_PROTOCOLS=true on the server — returns 404 when the flag is off, by design). Body fields mirror POST /api/skill-packs: kebab-case `name` (1..100, leading letter), non-empty `description`, `category` from the SkillPackCategory enum, and an optional `skillIds` array of UUID strings (NOT skill names) referencing current, non-deprecated, system-scope Skill rows. `isFeatured` defaults to false. isSystem is always false here — system packs are seeded (F7-I6), not created via API. Returns the created entity.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case pack name, 1..100 chars, must start with a letter (e.g. "helpdesk-pack", "mobile-shipping").',
+            },
+            description: {
+              type: 'string',
+              description: 'Human-readable description of what the pack bundles together. Required.',
+            },
+            category: {
+              type: 'string',
+              enum: ['helpdesk', 'security', 'mobile', 'testing', 'communication', 'deployment', 'workflow', 'memory', 'other'],
+              description: 'Category bucket the pack belongs to (groups packs in the onboarding picker).',
+            },
+            skillIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional array of skill UUIDs (NOT skill names) to bundle in this pack. Each UUID must reference a current, non-deprecated, system-scope Skill row. Defaults to an empty pack if omitted.',
+            },
+            isFeatured: {
+              type: 'boolean',
+              description: 'When true, the pack is surfaced in the curated onboarding default set. Defaults to false.',
+            },
+          },
+          required: ['name', 'description', 'category'],
+        },
+      },
+      {
+        name: 'haops_update_skill_pack',
+        description:
+          'Update an existing skill pack in place — no version bump (packs are unversioned; audit log captures the diff). Admin only, requires ENABLE_COMPOSED_PROTOCOLS=true. `name` and `isSystem` are immutable post-create. Supply only the fields you want to change; supplying none (or only same-as-current values) is a no-op that returns the current row unchanged (no audit row written). For `skillIds`, the array is a full replacement, not a patch — pass the complete desired set of UUIDs. Returns the updated entity.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case name of the pack to update (lookup key).',
+            },
+            description: {
+              type: 'string',
+              description: 'New description (non-empty string).',
+            },
+            category: {
+              type: 'string',
+              enum: ['helpdesk', 'security', 'mobile', 'testing', 'communication', 'deployment', 'workflow', 'memory', 'other'],
+              description: 'New category bucket. Packs can be re-categorised; audit captures old + new.',
+            },
+            skillIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Full replacement set of skill UUIDs (NOT a patch). Each must reference a current, non-deprecated, system-scope Skill row.',
+            },
+            isFeatured: {
+              type: 'boolean',
+              description: 'New featured flag.',
+            },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'haops_deprecate_skill_pack',
+        description:
+          'Soft-delete (deprecate) a skill pack — paranoid destroy on a single row (packs are unversioned, no cascade). Admin only, requires ENABLE_COMPOSED_PROTOCOLS=true. System packs (isSystem=true) cannot be deleted — the server returns 403; to "deprecate" a system pack, update its skillIds to empty via haops_update_skill_pack instead, or remove the seeder entry in code. Returns the server confirmation message.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case name of the pack to deprecate.',
+            },
+          },
+          required: ['name'],
+        },
+      },
 
       // ===== Testing MCP Tools =====
 
@@ -4887,6 +4968,138 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error listing skill packs: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_create_skill_pack') {
+    try {
+      const { name: packName, description, category, skillIds, isFeatured } = args as {
+        name: string;
+        description: string;
+        category: string;
+        skillIds?: string[];
+        isFeatured?: boolean;
+      };
+
+      const body: {
+        name: string;
+        description: string;
+        category: string;
+        skillIds?: string[];
+        isFeatured?: boolean;
+      } = { name: packName, description, category };
+      if (skillIds !== undefined) body.skillIds = skillIds;
+      if (isFeatured !== undefined) body.isFeatured = isFeatured;
+
+      const pack = await apiClient.createSkillPack(body);
+      const idCount = Array.isArray(pack.skillIds)
+        ? (pack.skillIds as unknown[]).length
+        : 0;
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              `Skill pack created: ${pack.name as string} ` +
+              `(${pack.category as string}, ${idCount} skill(s))\n` +
+              JSON.stringify(pack, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      // 404 from the gated POST means the feature flag is off on the server
+      // — translate to a user-friendly message instead of leaking the bare
+      // "Not found" the route returns by design.
+      const statusCode =
+        (error as { statusCode?: number } | null | undefined)?.statusCode;
+      const friendly =
+        statusCode === 404
+          ? 'Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Skill pack mutations are unavailable until the flag is enabled.'
+          : `Error creating skill pack: ${message}`;
+      return {
+        content: [{ type: 'text', text: friendly }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_update_skill_pack') {
+    try {
+      const { name: packName, description, category, skillIds, isFeatured } = args as {
+        name: string;
+        description?: string;
+        category?: string;
+        skillIds?: string[];
+        isFeatured?: boolean;
+      };
+
+      const body: {
+        description?: string;
+        category?: string;
+        skillIds?: string[];
+        isFeatured?: boolean;
+      } = {};
+      if (description !== undefined) body.description = description;
+      if (category !== undefined) body.category = category;
+      if (skillIds !== undefined) body.skillIds = skillIds;
+      if (isFeatured !== undefined) body.isFeatured = isFeatured;
+
+      const pack = await apiClient.updateSkillPack(packName, body);
+      const idCount = Array.isArray(pack.skillIds)
+        ? (pack.skillIds as unknown[]).length
+        : 0;
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              `Skill pack updated: ${pack.name as string} ` +
+              `(${pack.category as string}, ${idCount} skill(s))\n` +
+              JSON.stringify(pack, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const statusCode =
+        (error as { statusCode?: number } | null | undefined)?.statusCode;
+      const friendly =
+        statusCode === 404 && message === 'Not found'
+          ? 'Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Skill pack mutations are unavailable until the flag is enabled.'
+          : `Error updating skill pack: ${message}`;
+      return {
+        content: [{ type: 'text', text: friendly }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_deprecate_skill_pack') {
+    try {
+      const { name: packName } = args as { name: string };
+      const result = await apiClient.deprecateSkillPack(packName);
+      const msg = (result.message as string | undefined) ?? 'Skill pack deleted';
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Skill pack '${packName}' deprecated: ${msg}`,
+          },
+        ],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const statusCode =
+        (error as { statusCode?: number } | null | undefined)?.statusCode;
+      const friendly =
+        statusCode === 404 && message === 'Not found'
+          ? 'Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Skill pack mutations are unavailable until the flag is enabled.'
+          : `Error deprecating skill pack: ${message}`;
+      return {
+        content: [{ type: 'text', text: friendly }],
         isError: true,
       };
     }

@@ -215,4 +215,178 @@ describe('HAOpsApiClient', () => {
       await expect(client.readSkill('nonexistent')).rejects.toThrow(HAOpsApiError);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // P1·I3 — Skill Pack CRUD (create / update / deprecate).
+  //
+  // All three are admin-only and gated by ENABLE_COMPOSED_PROTOCOLS on the
+  // server side, so the only client-side guarantees are:
+  //   (a) the right URL is hit with the right HTTP verb
+  //   (b) the body is forwarded verbatim (no client-side reshape of fields)
+  //   (c) the raw entity comes back unwrapped (no envelope unwrapping)
+  //   (d) HAOpsApiError surfaces on non-2xx responses (so the index.ts
+  //       dispatcher can translate 404 → "feature flag off")
+  // ---------------------------------------------------------------------------
+  describe('Skill Pack CRUD (F7 / P1·I3)', () => {
+    it('createSkillPack POSTs to /api/skill-packs with the full body and returns the raw entity', async () => {
+      const mockPack = {
+        id: 'pack-1',
+        name: 'helpdesk-mvp',
+        description: 'MVP helpdesk bundle',
+        category: 'helpdesk',
+        skillIds: ['11111111-1111-1111-1111-111111111111'],
+        isFeatured: false,
+        isSystem: false,
+      };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.post.mockResolvedValue({ data: mockPack });
+
+      const body = {
+        name: 'helpdesk-mvp',
+        description: 'MVP helpdesk bundle',
+        category: 'helpdesk',
+        skillIds: ['11111111-1111-1111-1111-111111111111'],
+      };
+      const result = await client.createSkillPack(body);
+
+      expect(axiosInstance.post).toHaveBeenCalledWith(
+        '/api/skill-packs',
+        body,
+      );
+      expect(result).toEqual(mockPack);
+    });
+
+    it('createSkillPack omits optional fields when not supplied (skillIds default to server)', async () => {
+      const mockPack = { id: 'pack-2', name: 'minimal', skillIds: [] };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.post.mockResolvedValue({ data: mockPack });
+
+      const body = {
+        name: 'minimal',
+        description: 'min',
+        category: 'other',
+      };
+      await client.createSkillPack(body);
+
+      // Client must forward the body verbatim — no implicit skillIds: [].
+      // The server defaults skillIds to [] when omitted. This locks the
+      // contract so an inadvertent reshape doesn't silently send `[]` when
+      // the agent omitted the field.
+      expect(axiosInstance.post).toHaveBeenCalledWith(
+        '/api/skill-packs',
+        body,
+      );
+    });
+
+    it('createSkillPack surfaces HAOpsApiError on 404 (feature flag off)', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      const error = {
+        isAxiosError: true,
+        response: { status: 404, data: { error: 'Not found' } },
+        message: 'Request failed with status code 404',
+      };
+      (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+        .fn()
+        .mockReturnValue(true);
+      axiosInstance.post.mockRejectedValue(error);
+
+      await expect(
+        client.createSkillPack({
+          name: 'x',
+          description: 'x',
+          category: 'other',
+        }),
+      ).rejects.toThrow(HAOpsApiError);
+    });
+
+    it('updateSkillPack PUTs to /api/skill-packs/[name] and returns the raw entity', async () => {
+      const mockPack = {
+        id: 'pack-1',
+        name: 'helpdesk-mvp',
+        description: 'Updated',
+        category: 'helpdesk',
+        skillIds: ['22222222-2222-2222-2222-222222222222'],
+        isFeatured: true,
+      };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: mockPack });
+
+      const body = {
+        description: 'Updated',
+        skillIds: ['22222222-2222-2222-2222-222222222222'],
+        isFeatured: true,
+      };
+      const result = await client.updateSkillPack('helpdesk-mvp', body);
+
+      expect(axiosInstance.put).toHaveBeenCalledWith(
+        '/api/skill-packs/helpdesk-mvp',
+        body,
+      );
+      expect(result).toEqual(mockPack);
+    });
+
+    it('updateSkillPack url-encodes special characters in the name', async () => {
+      // The kebab-case validator on the server rejects most exotic names, but
+      // the client must still encode safely so an attacker-supplied name
+      // can't smuggle a path traversal. Mirrors encodeURIComponent usage in
+      // readSkill / readRoleTemplate / deprecateSkillPack.
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: {} });
+
+      await client.updateSkillPack('weird/name with space', { description: 'd' });
+
+      expect(axiosInstance.put).toHaveBeenCalledWith(
+        '/api/skill-packs/weird%2Fname%20with%20space',
+        { description: 'd' },
+      );
+    });
+
+    it('updateSkillPack accepts an empty patch body (no-op PUT)', async () => {
+      // Server treats a no-op PUT as a 200 with the current row + no audit
+      // row. Client must forward {} verbatim — don't reject it locally.
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: { name: 'x' } });
+
+      await client.updateSkillPack('x', {});
+
+      expect(axiosInstance.put).toHaveBeenCalledWith(
+        '/api/skill-packs/x',
+        {},
+      );
+    });
+
+    it('deprecateSkillPack DELETEs /api/skill-packs/[name] and returns the message payload', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.delete.mockResolvedValue({
+        data: { message: 'Skill pack deleted' },
+      });
+
+      const result = await client.deprecateSkillPack('helpdesk-mvp');
+
+      expect(axiosInstance.delete).toHaveBeenCalledWith(
+        '/api/skill-packs/helpdesk-mvp',
+      );
+      expect(result).toEqual({ message: 'Skill pack deleted' });
+    });
+
+    it('deprecateSkillPack surfaces HAOpsApiError on 403 (system pack)', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      const error = {
+        isAxiosError: true,
+        response: {
+          status: 403,
+          data: { error: 'System skill packs cannot be deleted' },
+        },
+        message: 'Request failed with status code 403',
+      };
+      (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+        .fn()
+        .mockReturnValue(true);
+      axiosInstance.delete.mockRejectedValue(error);
+
+      await expect(client.deprecateSkillPack('helpdesk')).rejects.toThrow(
+        HAOpsApiError,
+      );
+    });
+  });
 });
