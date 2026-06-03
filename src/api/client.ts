@@ -1928,6 +1928,108 @@ export class HAOpsApiClient {
     }
   }
 
+  /**
+   * Create a new skill pack. Admin-only on the server, and gated by the
+   * ENABLE_COMPOSED_PROTOCOLS feature flag (POST returns 404 when off — the
+   * route looks absent rather than 403 to avoid leaking existence; F1 M5).
+   *
+   * Body shape mirrors POST /api/skill-packs exactly:
+   *   - name: required, kebab-case, 1..100 chars, starts with a letter
+   *   - description: required, non-empty string
+   *   - category: required, must be a SkillPackCategory
+   *     ('helpdesk' | 'security' | 'mobile' | 'testing' | 'communication' |
+   *      'deployment' | 'workflow' | 'memory' | 'other')
+   *   - skillIds: optional, defaults to []; array of UUID strings (NOT skill
+   *     names) referencing current, non-deprecated, system-scope Skill rows.
+   *     The server re-validates existence + scope at write time.
+   *   - isFeatured: optional boolean, defaults to false
+   *
+   * Returns the bare entity (status 201). isSystem is always false on this
+   * surface — system packs are seeded (F7-I6) and not creatable via the API.
+   */
+  async createSkillPack(
+    body: {
+      name: string;
+      description: string;
+      category: string;
+      skillIds?: string[];
+      isFeatured?: boolean;
+    },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        '/api/skill-packs',
+        body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Update a skill pack in place (no version bump — packs are unversioned;
+   * audit log captures every diff). Admin-only, feature-flagged. PUT is
+   * transactional with a row LOCK.UPDATE so concurrent PUTs don't interleave
+   * stale reads (F1 S5).
+   *
+   * `name` and `isSystem` are immutable post-create — pass any of the fields
+   * below to mutate. At least one field must differ for an audit row to be
+   * written; a no-op PUT returns the current row unchanged (200, no audit).
+   *
+   * Body (all optional; supply only fields you want to change):
+   *   - description: non-empty string
+   *   - category: SkillPackCategory enum value
+   *   - skillIds: array of UUID strings (full replacement, NOT a patch);
+   *     server re-validates existence + system scope per item.
+   *   - isFeatured: boolean
+   *
+   * Returns the updated entity (raw, no envelope — mirrors update_module/
+   * feature/issue contract).
+   */
+  async updateSkillPack(
+    name: string,
+    body: {
+      description?: string;
+      category?: string;
+      skillIds?: string[];
+      isFeatured?: boolean;
+    },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.put<Record<string, unknown>>(
+        `/api/skill-packs/${encodeURIComponent(name)}`,
+        body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Soft-delete (deprecate) a skill pack. Admin-only, feature-flagged. Unlike
+   * Skill / RoleTemplate (which version-bump on deprecation), packs are
+   * unversioned — this is a single-row paranoid destroy.
+   *
+   * isSystem=true rows return 403 — seeded packs are part of the platform
+   * contract. "Deprecating" a system pack means editing its skillIds to empty
+   * (via updateSkillPack) or removing the seeder entry in code.
+   *
+   * Returns the server's `{ message: 'Skill pack deleted' }` payload so the
+   * MCP tool surface can echo confirmation back to the agent.
+   */
+  async deprecateSkillPack(name: string): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.delete<Record<string, unknown>>(
+        `/api/skill-packs/${encodeURIComponent(name)}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   // ===== Testing MCP Tools =====
 
   async reportTestRun(
