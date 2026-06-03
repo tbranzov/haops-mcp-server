@@ -334,6 +334,34 @@ export interface UpdateSkillRequest {
   isDeprecated?: boolean;
 }
 
+/**
+ * Lifecycle transition action for composed-protocol assets (skills, role
+ * templates, skill packs). The server exposes three POST endpoints per asset
+ * at /api/{resource}/[name]/{action}; this enum is the discriminator for the
+ * consolidated MCP tool surface (one tool per resource type with an
+ * `action` enum, rather than 3×N separate tools).
+ *
+ * P2·I7 ships the routes server-side; P2·I8 wraps them here. The set is
+ * intentionally fixed at three values — the resolver currently models the
+ * lifecycle as draft → proposed → published → deprecated, and any future
+ * "rollback" / "republish" transition would land as a new enum value.
+ */
+export type LifecycleTransitionAction = 'propose' | 'publish' | 'deprecate';
+
+/**
+ * Server-side 409 response shape for an invalid lifecycle transition.
+ * Returned by POST /api/{skills|role-templates|skill-packs}/[name]/[action]
+ * when the requested action is not in the allowed-transitions set for the
+ * current lifecycle state. The MCP tool turns this into a helpful
+ * "Cannot transition from X to Y — allowed: [...]" message.
+ */
+export interface InvalidTransitionError {
+  error: 'invalid_transition';
+  from: string;
+  to: string;
+  allowed: string[];
+}
+
 // Role Templates (Agent Skills F2 — composed protocols)
 
 /**

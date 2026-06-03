@@ -892,4 +892,283 @@ describe('HAOpsApiClient', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // P2·I8 — Lifecycle transition wrappers.
+  //
+  // The three transition methods (transitionSkill / transitionRoleTemplate /
+  // transitionSkillPack) wrap POST /api/{resource}/[name]/[action] with an
+  // empty `{}` body. The client-side guarantees we lock in here:
+  //   (a) URL is /api/{resource}/{encodedName}/{action} with action plugged in
+  //       verbatim (we trust the LifecycleTransitionAction type at the call
+  //       site — no client-side action whitelisting)
+  //   (b) body is exactly `{}` (the route ignores anything else; sending the
+  //       echo'd args by mistake would be a spec violation)
+  //   (c) scope/projectSlug compose the query string for skills only
+  //   (d) name is URL-encoded so path-traversal can't smuggle in
+  //   (e) HAOpsApiError bubbles for 404 / 409 so the dispatcher in
+  //       src/index.ts can format the invalid_transition payload
+  // ---------------------------------------------------------------------------
+  describe('Lifecycle transitions (P2·I8)', () => {
+    describe('transitionSkill', () => {
+      it('POSTs to /api/skills/[name]/propose with empty body and no query when scope omitted query', async () => {
+        // scope is supplied (required by signature) but defaults to system —
+        // verify it ends up in the query string explicitly so server-side
+        // routing has no ambiguity.
+        const mockSkill = { id: 's1', name: 'foo', lifecycleState: 'proposed', version: 1 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockSkill });
+
+        const result = await client.transitionSkill({
+          name: 'foo',
+          scope: 'system',
+          action: 'propose',
+        });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/skills/foo/propose?scope=system',
+          {},
+        );
+        expect(result).toEqual(mockSkill);
+      });
+
+      it('POSTs publish action with scope=project and projectSlug in query', async () => {
+        const mockSkill = { id: 's2', name: 'bar', lifecycleState: 'published', version: 2 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockSkill });
+
+        const result = await client.transitionSkill({
+          name: 'bar',
+          scope: 'project',
+          action: 'publish',
+          projectSlug: 'fdev',
+        });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/skills/bar/publish?scope=project&projectSlug=fdev',
+          {},
+        );
+        expect(result).toEqual(mockSkill);
+      });
+
+      it('URL-encodes the skill name to block path traversal', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: {} });
+
+        await client.transitionSkill({
+          name: 'weird/name with space',
+          scope: 'system',
+          action: 'deprecate',
+        });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/skills/weird%2Fname%20with%20space/deprecate?scope=system',
+          {},
+        );
+      });
+
+      it('surfaces HAOpsApiError on 409 invalid_transition with the body attached for formatting', async () => {
+        // The dispatcher in src/index.ts (formatTransitionError) reads
+        // statusCode AND the response body's `from`/`to`/`allowed` fields
+        // to render the prescriptive hint. Lock the body-passthrough here.
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: {
+            status: 409,
+            data: {
+              error: 'invalid_transition',
+              from: 'published',
+              to: 'proposed',
+              allowed: ['deprecated'],
+            },
+          },
+          message: 'Request failed with status code 409',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+          .fn()
+          .mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(
+          client.transitionSkill({ name: 'foo', scope: 'system', action: 'propose' }),
+        ).rejects.toMatchObject({
+          name: 'HAOpsApiError',
+          statusCode: 409,
+          message: 'invalid_transition',
+          response: {
+            error: 'invalid_transition',
+            from: 'published',
+            to: 'proposed',
+            allowed: ['deprecated'],
+          },
+        });
+      });
+
+      it('surfaces HAOpsApiError on 404 (feature flag off)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+          .fn()
+          .mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(
+          client.transitionSkill({ name: 'foo', scope: 'system', action: 'publish' }),
+        ).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
+    describe('transitionRoleTemplate', () => {
+      it('POSTs to /api/role-templates/[name]/propose with empty body', async () => {
+        const mockTemplate = {
+          id: 'rt-1',
+          name: 'custom-dev',
+          lifecycleState: 'proposed',
+          version: 1,
+          isSystem: false,
+        };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockTemplate });
+
+        const result = await client.transitionRoleTemplate({
+          name: 'custom-dev',
+          action: 'propose',
+        });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/role-templates/custom-dev/propose',
+          {},
+        );
+        expect(result).toEqual(mockTemplate);
+      });
+
+      it('POSTs publish without query params (templates are system-wide, no scope axis)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: { id: 'rt-2', lifecycleState: 'published' } });
+
+        await client.transitionRoleTemplate({ name: 'dev', action: 'publish' });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/role-templates/dev/publish',
+          {},
+        );
+      });
+
+      it('URL-encodes the template name', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: {} });
+
+        await client.transitionRoleTemplate({ name: 'team alpha', action: 'deprecate' });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/role-templates/team%20alpha/deprecate',
+          {},
+        );
+      });
+
+      it('surfaces HAOpsApiError on 409 with the invalid_transition body for dispatcher formatting', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: {
+            status: 409,
+            data: {
+              error: 'invalid_transition',
+              from: 'draft',
+              to: 'deprecate',
+              allowed: ['propose'],
+            },
+          },
+          message: 'Request failed with status code 409',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+          .fn()
+          .mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(
+          client.transitionRoleTemplate({ name: 'dev', action: 'deprecate' }),
+        ).rejects.toMatchObject({
+          statusCode: 409,
+          message: 'invalid_transition',
+          response: { from: 'draft', allowed: ['propose'] },
+        });
+      });
+    });
+
+    describe('transitionSkillPack', () => {
+      it('POSTs to /api/skill-packs/[name]/propose with empty body', async () => {
+        const mockPack = {
+          id: 'pack-1',
+          name: 'helpdesk-mvp',
+          lifecycleState: 'proposed',
+          category: 'helpdesk',
+          skillIds: ['11111111-1111-1111-1111-111111111111'],
+          isSystem: false,
+        };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockPack });
+
+        const result = await client.transitionSkillPack({
+          name: 'helpdesk-mvp',
+          action: 'propose',
+        });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/skill-packs/helpdesk-mvp/propose',
+          {},
+        );
+        expect(result).toEqual(mockPack);
+      });
+
+      it('POSTs publish for a skill pack (no scope axis, no query string)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: { id: 'pack-2', lifecycleState: 'published' } });
+
+        await client.transitionSkillPack({ name: 'security-mvp', action: 'publish' });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/skill-packs/security-mvp/publish',
+          {},
+        );
+      });
+
+      it('URL-encodes the pack name', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: {} });
+
+        await client.transitionSkillPack({ name: 'odd/name', action: 'deprecate' });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/skill-packs/odd%2Fname/deprecate',
+          {},
+        );
+      });
+
+      it('surfaces HAOpsApiError on 403 (system pack can not be deprecated)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: {
+            status: 403,
+            data: { error: 'System skill packs cannot be deprecated' },
+          },
+          message: 'Request failed with status code 403',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+          .fn()
+          .mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(
+          client.transitionSkillPack({ name: 'helpdesk', action: 'deprecate' }),
+        ).rejects.toThrow(HAOpsApiError);
+      });
+    });
+  });
+
 });

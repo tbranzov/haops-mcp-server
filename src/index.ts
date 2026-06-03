@@ -2217,6 +2217,85 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
 
+      // ===== Lifecycle Transitions (P2·I8) =====
+      //
+      // One tool per resource type with an `action` enum, rather than 9
+      // separate tools (3 actions × 3 resources). This keeps the MCP surface
+      // small and makes the available transitions discoverable from the
+      // tool's input schema. The Phase 1 deprecate_* tools (which hit DELETE)
+      // remain for back-compat — `action: 'deprecate'` here uses the new
+      // POST /[name]/deprecate route which versions + state-transitions
+      // instead of soft-cascade-deleting.
+      {
+        name: 'haops_transition_skill',
+        description:
+          'Transition a skill through its lifecycle (propose / publish / deprecate). Hits POST /api/skills/[name]/[action]. The server enforces the allowed-from-here state machine — on a disallowed transition you get a 409 with `from`, `to`, and the `allowed` set listed in the response. Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true on the server. For project-scope skills pass scope="project" + projectSlug.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case skill name to transition.',
+            },
+            scope: {
+              type: 'string',
+              enum: ['system', 'project'],
+              description: 'Scope of the target skill. "system" omits projectSlug; "project" requires it.',
+            },
+            action: {
+              type: 'string',
+              enum: ['propose', 'publish', 'deprecate'],
+              description: 'Lifecycle action: "propose" promotes a draft to proposed; "publish" promotes a proposed version to published; "deprecate" marks a published skill as deprecated (resolver hides it from default manifests).',
+            },
+            projectSlug: {
+              type: 'string',
+              description: 'Project slug — REQUIRED when scope="project"; MUST be omitted when scope="system".',
+            },
+          },
+          required: ['name', 'scope', 'action'],
+        },
+      },
+      {
+        name: 'haops_transition_role_template',
+        description:
+          'Transition a role template through its lifecycle (propose / publish / deprecate). Hits POST /api/role-templates/[name]/[action]. Role templates are system-wide — no scope axis. Server enforces the allowed-from-here state machine and returns 409 with `allowed` on a disallowed transition. System templates (isSystem=true) cannot be deprecated (server returns 403). Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case name of the role template to transition.',
+            },
+            action: {
+              type: 'string',
+              enum: ['propose', 'publish', 'deprecate'],
+              description: 'Lifecycle action: "propose" promotes a draft to proposed; "publish" promotes a proposed version to published; "deprecate" marks a published template as deprecated.',
+            },
+          },
+          required: ['name', 'action'],
+        },
+      },
+      {
+        name: 'haops_transition_skill_pack',
+        description:
+          'Transition a skill pack through its lifecycle (propose / publish / deprecate). Hits POST /api/skill-packs/[name]/[action]. Packs are unversioned and system-wide. Server enforces the allowed-from-here state machine and returns 409 with `allowed` on a disallowed transition. System packs (isSystem=true) cannot be deprecated (server returns 403 — update skillIds to [] via haops_update_skill_pack instead). Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case name of the skill pack to transition.',
+            },
+            action: {
+              type: 'string',
+              enum: ['propose', 'publish', 'deprecate'],
+              description: 'Lifecycle action: "propose" promotes a draft pack to proposed; "publish" promotes a proposed pack to published; "deprecate" marks a published pack as deprecated.',
+            },
+          },
+          required: ['name', 'action'],
+        },
+      },
+
       // ===== Testing MCP Tools =====
 
       {
@@ -5606,6 +5685,146 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           : `Error deprecating skill pack: ${message}`;
       return {
         content: [{ type: 'text', text: friendly }],
+        isError: true,
+      };
+    }
+  }
+
+  // ===== Lifecycle Transition Handlers (P2·I8) =====
+  //
+  // Three handlers — one per resource type (skill / role template / skill
+  // pack), each gated on a single `action` enum. Consolidating into 3 tools
+  // instead of 9 keeps the MCP catalogue small AND lets the action enum
+  // double as in-schema documentation of the allowed transitions (the I9
+  // E2E test driver reads the schema, not the prose).
+  //
+  // Error formatter handles three cases:
+  //   (1) 409 invalid_transition — render the from/to/allowed envelope as a
+  //       prescriptive hint so the agent knows the next legal move.
+  //   (2) 404 'Not found' — feature-flag-off pattern (same as Phase 1 CRUD).
+  //   (3) Anything else — passthrough the raw message.
+  const formatTransitionError = (
+    error: unknown,
+    resource: 'skill' | 'role template' | 'skill pack',
+    action: string,
+  ): string => {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    const apiError = error as
+      | { statusCode?: number; response?: unknown }
+      | null
+      | undefined;
+    const statusCode = apiError?.statusCode;
+
+    // 409 invalid_transition: the server returns
+    //   { error: 'invalid_transition', from, to, allowed: [...] }
+    // via HAOpsApiClient.handleError which surfaces `error` as the message
+    // and the full body on `.response`. Detect both signals before formatting.
+    if (statusCode === 409 && message === 'invalid_transition') {
+      const body = apiError?.response as
+        | { from?: string; to?: string; allowed?: string[] }
+        | undefined;
+      const from = body?.from ?? 'unknown';
+      const to = body?.to ?? action;
+      const allowed = Array.isArray(body?.allowed) ? body!.allowed!.join(', ') : '(none)';
+      return `Cannot transition ${resource} from '${from}' to '${to}' — allowed transitions from '${from}': [${allowed}]`;
+    }
+
+    // 404 from the gated POST means the feature flag is off — same pattern
+    // as Phase 1 CRUD wrappers.
+    if (statusCode === 404 && message === 'Not found') {
+      return `Error transitioning ${resource}: Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Ask the admin to enable it before retrying.`;
+    }
+
+    return `Error transitioning ${resource} (action='${action}'): ${message}`;
+  };
+
+  if (name === 'haops_transition_skill') {
+    try {
+      const { name: skillName, scope, action, projectSlug } = args as {
+        name: string;
+        scope: 'system' | 'project';
+        action: 'propose' | 'publish' | 'deprecate';
+        projectSlug?: string;
+      };
+
+      const skill = await apiClient.transitionSkill({
+        name: skillName,
+        scope,
+        action,
+        projectSlug,
+      });
+
+      const lines = [
+        `Skill transitioned: ${skill.name as string} → action='${action}'`,
+        `Scope: ${skill.scope as string}${skill.projectId ? ` (projectId=${skill.projectId as string})` : ''}`,
+        `Lifecycle state: ${(skill.lifecycleState as string) ?? (skill.state as string) ?? 'unknown'}`,
+        `Version: ${skill.version ?? 'N/A'}`,
+        `Skill ID: ${skill.id as string}`,
+      ];
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: formatTransitionError(error, 'skill', (args as { action?: string }).action ?? 'unknown') }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_transition_role_template') {
+    try {
+      const { name: templateName, action } = args as {
+        name: string;
+        action: 'propose' | 'publish' | 'deprecate';
+      };
+
+      const template = await apiClient.transitionRoleTemplate({
+        name: templateName,
+        action,
+      });
+
+      const lines = [
+        `Role template transitioned: ${template.name as string} → action='${action}'`,
+        `Lifecycle state: ${(template.lifecycleState as string) ?? (template.state as string) ?? 'unknown'}`,
+        `Version: ${template.version ?? 'N/A'}`,
+        template.isSystem ? 'System: true' : 'System: false',
+        `Template ID: ${template.id as string}`,
+      ];
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: formatTransitionError(error, 'role template', (args as { action?: string }).action ?? 'unknown') }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_transition_skill_pack') {
+    try {
+      const { name: packName, action } = args as {
+        name: string;
+        action: 'propose' | 'publish' | 'deprecate';
+      };
+
+      const pack = await apiClient.transitionSkillPack({
+        name: packName,
+        action,
+      });
+
+      const idCount = Array.isArray(pack.skillIds)
+        ? (pack.skillIds as unknown[]).length
+        : 0;
+      const lines = [
+        `Skill pack transitioned: ${pack.name as string} → action='${action}'`,
+        `Lifecycle state: ${(pack.lifecycleState as string) ?? (pack.state as string) ?? 'unknown'}`,
+        `Category: ${pack.category as string}`,
+        `Skill count: ${idCount}`,
+        pack.isSystem ? 'System: true' : 'System: false',
+        `Pack ID: ${pack.id as string}`,
+      ];
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: formatTransitionError(error, 'skill pack', (args as { action?: string }).action ?? 'unknown') }],
         isError: true,
       };
     }

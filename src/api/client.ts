@@ -27,6 +27,7 @@ import type {
   CreateSkillRequest,
   UpdateSkillRequest,
   SkillScope,
+  LifecycleTransitionAction,
 } from '../types/entities.js';
 
 interface PaginatedResponse<T> {
@@ -2023,6 +2024,116 @@ export class HAOpsApiClient {
     try {
       const response = await this.axios.delete<Record<string, unknown>>(
         `/api/skill-packs/${encodeURIComponent(name)}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // ===== Lifecycle Transition Methods (P2·I8) =====
+  //
+  // P2·I7 (haops repo commit 96b7b05) shipped three new POST endpoints per
+  // composed-protocol asset:
+  //   POST /api/{skills|role-templates|skill-packs}/[name]/propose
+  //   POST /api/{skills|role-templates|skill-packs}/[name]/publish
+  //   POST /api/{skills|role-templates|skill-packs}/[name]/deprecate
+  //
+  // The body is always empty `{}` — all state lives in URL + query params.
+  // Skills additionally carry `scope` and (when scope='project') `projectSlug`
+  // as query params, mirroring the existing CRUD shape.
+  //
+  // On success (200) the server returns the raw entity post-transition.
+  // On disallowed transitions the server returns 409 with body:
+  //   { error: 'invalid_transition', from, to, allowed: [...] }
+  // The handleError() pipeline raises HAOpsApiError with that body attached
+  // via the `response` field so the MCP tool dispatcher can format a helpful
+  // hint listing the allowed-from-here transitions. See P2·I8 dispatcher in
+  // src/index.ts (formatTransitionError) for the rendering rules.
+
+  /**
+   * Transition a skill through its lifecycle (propose / publish / deprecate).
+   *
+   * Hits POST /api/skills/[name]/[action]?scope=&projectSlug= with an empty
+   * body. `scope` defaults to 'system'; for project-scoped skills pass
+   * scope='project' + projectSlug (server enforces the pairing — wrong combo
+   * yields a 400 with a descriptive error).
+   *
+   * Admin-only on the server, feature-flagged behind ENABLE_COMPOSED_PROTOCOLS
+   * (the 404 "looks absent" pattern from CRUD applies here too).
+   *
+   * Returns the raw post-transition skill entity (no envelope). On 409 the
+   * caller gets HAOpsApiError with `.response = { error: 'invalid_transition',
+   * from, to, allowed }` for the MCP dispatcher to render.
+   */
+  async transitionSkill(args: {
+    name: string;
+    scope: SkillScope;
+    action: LifecycleTransitionAction;
+    projectSlug?: string;
+  }): Promise<Record<string, unknown>> {
+    try {
+      const params = new URLSearchParams();
+      if (args.scope) params.set('scope', args.scope);
+      if (args.projectSlug) params.set('projectSlug', args.projectSlug);
+      const query = params.toString();
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/skills/${encodeURIComponent(args.name)}/${args.action}${
+          query ? `?${query}` : ''
+        }`,
+        {},
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Transition a role template through its lifecycle. Role templates are
+   * system-wide (no scope / projectSlug axis), so the signature is leaner
+   * than transitionSkill — just `name` + `action`.
+   *
+   * Hits POST /api/role-templates/[name]/[action] with empty body. Returns
+   * the raw post-transition template entity. 409 surfaces the same
+   * invalid_transition envelope as transitionSkill.
+   *
+   * Admin-only, feature-flagged. System templates (isSystem=true) cannot be
+   * deprecated and return 403 — leave that surfacing to the MCP dispatcher.
+   */
+  async transitionRoleTemplate(args: {
+    name: string;
+    action: LifecycleTransitionAction;
+  }): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/role-templates/${encodeURIComponent(args.name)}/${args.action}`,
+        {},
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Transition a skill pack through its lifecycle. Packs are unversioned
+   * and system-wide (no scope axis), so the signature mirrors role templates
+   * — just `name` + `action`.
+   *
+   * Hits POST /api/skill-packs/[name]/[action] with empty body. Returns the
+   * raw post-transition pack entity. System packs (isSystem=true) return 403
+   * on deprecate; agents should update skillIds to [] via
+   * updateSkillPack instead (mirrors deprecateSkillPack).
+   */
+  async transitionSkillPack(args: {
+    name: string;
+    action: LifecycleTransitionAction;
+  }): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/skill-packs/${encodeURIComponent(args.name)}/${args.action}`,
+        {},
       );
       return response.data;
     } catch (error) {
