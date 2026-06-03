@@ -215,4 +215,257 @@ describe('HAOpsApiClient', () => {
       await expect(client.readSkill('nonexistent')).rejects.toThrow(HAOpsApiError);
     });
   });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Skill CRUD client methods (P1·I1).
+  //
+  // The MCP tools haops_create_skill / haops_update_skill / haops_deprecate_skill
+  // are thin wrappers over these client methods, so locking the URL / method /
+  // body shape here guards against regressions in the tools too.
+  // ──────────────────────────────────────────────────────────────────────────
+  describe('createSkill', () => {
+    it('POSTs /api/skills with the full system-skill body', async () => {
+      const mockSkill = {
+        id: 's-uuid',
+        name: 'foo-skill',
+        scope: 'system',
+        version: 1,
+        isCurrent: true,
+        category: 'review',
+      };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.post.mockResolvedValue({ data: mockSkill });
+
+      const result = await client.createSkill({
+        scope: 'system',
+        name: 'foo-skill',
+        description: 'Test skill',
+        content: '# Markdown body',
+        category: 'review',
+        applicableRoles: ['dev', 'qa'],
+      });
+
+      expect(axiosInstance.post).toHaveBeenCalledWith('/api/skills', {
+        scope: 'system',
+        name: 'foo-skill',
+        description: 'Test skill',
+        content: '# Markdown body',
+        category: 'review',
+        applicableRoles: ['dev', 'qa'],
+      });
+      expect(result).toEqual(mockSkill);
+    });
+
+    it('POSTs /api/skills with projectSlug for project-scope skills', async () => {
+      const mockSkill = { id: 's-uuid', name: 'p-skill', scope: 'project', version: 1 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.post.mockResolvedValue({ data: mockSkill });
+
+      const result = await client.createSkill({
+        scope: 'project',
+        name: 'p-skill',
+        description: 'd',
+        content: 'c',
+        category: 'planning',
+        applicableRoles: ['*'],
+        projectSlug: 'fdev',
+      });
+
+      expect(axiosInstance.post).toHaveBeenCalledWith('/api/skills', {
+        scope: 'project',
+        name: 'p-skill',
+        description: 'd',
+        content: 'c',
+        category: 'planning',
+        applicableRoles: ['*'],
+        projectSlug: 'fdev',
+      });
+      expect(result).toEqual(mockSkill);
+    });
+
+    it('throws HAOpsApiError on 409 conflict', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      const error = {
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: { error: "A skill named 'foo' already exists in this scope" },
+        },
+        message: 'Request failed with status code 409',
+      };
+      (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+        .fn()
+        .mockReturnValue(true);
+      axiosInstance.post.mockRejectedValue(error);
+
+      await expect(
+        client.createSkill({
+          scope: 'system',
+          name: 'foo',
+          description: 'd',
+          content: 'c',
+          category: 'review',
+          applicableRoles: ['dev'],
+        }),
+      ).rejects.toThrow(HAOpsApiError);
+    });
+
+    it('throws HAOpsApiError on 404 (feature flag off)', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      const error = {
+        isAxiosError: true,
+        response: { status: 404, data: { error: 'Not found' } },
+        message: 'Request failed with status code 404',
+      };
+      (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+        .fn()
+        .mockReturnValue(true);
+      axiosInstance.post.mockRejectedValue(error);
+
+      // The MCP tool layer translates this to a user-friendly hint about the
+      // ENABLE_COMPOSED_PROTOCOLS flag; at the client layer it remains a
+      // generic HAOpsApiError with the raw 'Not found' message.
+      await expect(
+        client.createSkill({
+          scope: 'system',
+          name: 'foo',
+          description: 'd',
+          content: 'c',
+          category: 'review',
+          applicableRoles: ['dev'],
+        }),
+      ).rejects.toThrow(HAOpsApiError);
+    });
+  });
+
+  describe('updateSkill', () => {
+    it('PUTs /api/skills/{name} with no query when scope omitted', async () => {
+      const mockSkill = { id: 's2', name: 'foo', scope: 'system', version: 2 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: mockSkill });
+
+      const result = await client.updateSkill('foo', {}, { description: 'updated' });
+
+      expect(axiosInstance.put).toHaveBeenCalledWith('/api/skills/foo', {
+        description: 'updated',
+      });
+      expect(result).toEqual(mockSkill);
+    });
+
+    it('PUTs with ?scope=project&projectSlug=fdev for project-scope skills', async () => {
+      const mockSkill = { id: 's2', name: 'foo', scope: 'project', version: 2 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: mockSkill });
+
+      const result = await client.updateSkill(
+        'foo',
+        { scope: 'project', projectSlug: 'fdev' },
+        { content: 'new body', category: 'testing' },
+      );
+
+      expect(axiosInstance.put).toHaveBeenCalledWith(
+        '/api/skills/foo?scope=project&projectSlug=fdev',
+        { content: 'new body', category: 'testing' },
+      );
+      expect(result).toEqual(mockSkill);
+    });
+
+    it('forwards isDeprecated=true through the body', async () => {
+      const mockSkill = { id: 's3', name: 'foo', scope: 'system', version: 3, isDeprecated: true };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: mockSkill });
+
+      const result = await client.updateSkill('foo', { scope: 'system' }, { isDeprecated: true });
+
+      expect(axiosInstance.put).toHaveBeenCalledWith('/api/skills/foo?scope=system', {
+        isDeprecated: true,
+      });
+      expect((result as { isDeprecated?: boolean }).isDeprecated).toBe(true);
+    });
+
+    it('returns the current row unchanged on a server-detected no-op (no version bump)', async () => {
+      // Server returns the current row (same version) when nothing differs.
+      // We don't bump or wrap the response — the consumer reads `version` to
+      // decide noop vs publish.
+      const currentRow = { id: 's-current', name: 'foo', scope: 'system', version: 7 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: currentRow });
+
+      const result = await client.updateSkill('foo', {}, { description: 'same' });
+
+      expect(result).toEqual(currentRow);
+      expect((result as { version?: number }).version).toBe(7);
+    });
+
+    it('throws HAOpsApiError on 404 (skill missing or flag off)', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      const error = {
+        isAxiosError: true,
+        response: { status: 404, data: { error: 'Skill not found' } },
+        message: 'Request failed with status code 404',
+      };
+      (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+        .fn()
+        .mockReturnValue(true);
+      axiosInstance.put.mockRejectedValue(error);
+
+      await expect(
+        client.updateSkill('nope', {}, { description: 'x' }),
+      ).rejects.toThrow(HAOpsApiError);
+    });
+  });
+
+  describe('deprecateSkill', () => {
+    it('DELETEs /api/skills/{name} with no query when scope omitted', async () => {
+      const mockResponse = { message: 'Skill deleted', versionCount: 3 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.delete.mockResolvedValue({ data: mockResponse });
+
+      const result = await client.deprecateSkill('foo');
+
+      expect(axiosInstance.delete).toHaveBeenCalledWith('/api/skills/foo');
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('DELETEs with ?scope=project&projectSlug=fdev for project-scope skills', async () => {
+      const mockResponse = { message: 'Skill deleted', versionCount: 1 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.delete.mockResolvedValue({ data: mockResponse });
+
+      const result = await client.deprecateSkill('foo', {
+        scope: 'project',
+        projectSlug: 'fdev',
+      });
+
+      expect(axiosInstance.delete).toHaveBeenCalledWith(
+        '/api/skills/foo?scope=project&projectSlug=fdev',
+      );
+      expect(result.versionCount).toBe(1);
+    });
+
+    it('passes scope=system query when explicitly given', async () => {
+      const mockResponse = { message: 'Skill deleted', versionCount: 2 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.delete.mockResolvedValue({ data: mockResponse });
+
+      await client.deprecateSkill('foo', { scope: 'system' });
+
+      expect(axiosInstance.delete).toHaveBeenCalledWith('/api/skills/foo?scope=system');
+    });
+
+    it('throws HAOpsApiError on 404', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      const error = {
+        isAxiosError: true,
+        response: { status: 404, data: { error: 'Skill not found' } },
+        message: 'Request failed with status code 404',
+      };
+      (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+        .fn()
+        .mockReturnValue(true);
+      axiosInstance.delete.mockRejectedValue(error);
+
+      await expect(client.deprecateSkill('nonexistent')).rejects.toThrow(HAOpsApiError);
+    });
+  });
 });
