@@ -1692,6 +1692,100 @@ export class HAOpsApiClient {
     }
   }
 
+  /**
+   * Create a new role template (admin, feature-flagged).
+   *
+   * POSTs to `/api/role-templates`. Always inserts version=1, isCurrent=true,
+   * isSystem=false — the seeder owns the system flag, and version bumps go
+   * through `updateRoleTemplate` (PUT). 409 if a current undeleted row with
+   * the same name already exists.
+   *
+   * Field shape mirrors `app/api/role-templates/route.ts` POST handler:
+   * kebab-case `name`, `baseRole` from BASE_ROLES, non-empty `baseBody`
+   * (admin-trusted markdown), and optional `defaultSkills` (array of
+   * {skillId, required} — duplicates rejected, skill UUIDs must exist and be
+   * current).
+   *
+   * Returns the raw template row (201).
+   */
+  async createRoleTemplate(
+    body: {
+      name: string;
+      baseRole: string;
+      baseBody: string;
+      description?: string | null;
+      defaultSkills?: Array<{ skillId: string; required: boolean }>;
+    },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        '/api/role-templates',
+        body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Publish a new version of a role template (admin, feature-flagged).
+   *
+   * PUTs to `/api/role-templates/{name}`. The server flips the current row's
+   * `isCurrent` to false and inserts a new row at version+1, all in one
+   * transaction. A no-op PUT (no fields differ) returns the current row
+   * unchanged with version untouched.
+   *
+   * Only supply the fields you want to change. `name` and `isSystem` are
+   * immutable post-create — to rename, create + delete.
+   *
+   * Returns the new (or unchanged) raw template row.
+   */
+  async updateRoleTemplate(
+    name: string,
+    body: {
+      baseRole?: string;
+      description?: string | null;
+      baseBody?: string;
+      defaultSkills?: Array<{ skillId: string; required: boolean }>;
+    },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.put<Record<string, unknown>>(
+        `/api/role-templates/${encodeURIComponent(name)}`,
+        body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Soft-delete (deprecate) a role template (admin, feature-flagged).
+   *
+   * DELETEs `/api/role-templates/{name}`. Cascade soft-deletes ALL versions
+   * of the template (current + history) — F1 QA-2 lesson; the prior
+   * "current row only" behaviour orphaned old versions across edit→delete
+   * cycles. System templates (isSystem=true) return 403.
+   *
+   * The server returns `{ message, versionCount }` indicating how many rows
+   * were soft-deleted in the cascade.
+   */
+  async deprecateRoleTemplate(
+    name: string,
+  ): Promise<{ message: string; versionCount: number }> {
+    try {
+      const response = await this.axios.delete<{
+        message: string;
+        versionCount: number;
+      }>(`/api/role-templates/${encodeURIComponent(name)}`);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   // ===== Skill Pack Tools (F7) =====
 
   /**

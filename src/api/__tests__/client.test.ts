@@ -215,4 +215,252 @@ describe('HAOpsApiClient', () => {
       await expect(client.readSkill('nonexistent')).rejects.toThrow(HAOpsApiError);
     });
   });
+
+  // Coverage for the P1·I2 role-template CRUD client methods. These wrap
+  // /api/role-templates and /api/role-templates/[name]. The URL/body shape
+  // must match `app/api/role-templates/route.ts` + `[name]/route.ts` exactly
+  // — the server validates names (kebab-case), baseRole (BASE_ROLES enum),
+  // baseBody (non-empty), and defaultSkills (array of {skillId, required}).
+  describe('Role Template CRUD (F2)', () => {
+    describe('createRoleTemplate', () => {
+      it('should POST minimal required fields and return the created row', async () => {
+        const mockTemplate = {
+          id: 'rt-1',
+          name: 'custom-architect',
+          baseRole: 'architect',
+          baseBody: '# Boot\n…',
+          description: null,
+          defaultSkills: [],
+          version: 1,
+          isCurrent: true,
+          isSystem: false,
+        };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockTemplate });
+
+        const result = await client.createRoleTemplate({
+          name: 'custom-architect',
+          baseRole: 'architect',
+          baseBody: '# Boot\n…',
+        });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith('/api/role-templates', {
+          name: 'custom-architect',
+          baseRole: 'architect',
+          baseBody: '# Boot\n…',
+        });
+        expect(result).toEqual(mockTemplate);
+      });
+
+      it('should forward description + defaultSkills when supplied', async () => {
+        const mockTemplate = { id: 'rt-2', name: 'dev-mobile', version: 1 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockTemplate });
+
+        await client.createRoleTemplate({
+          name: 'dev-mobile',
+          baseRole: 'dev',
+          baseBody: 'body',
+          description: 'Mobile dev template',
+          defaultSkills: [
+            { skillId: '11111111-1111-1111-1111-111111111111', required: true },
+            { skillId: '22222222-2222-2222-2222-222222222222', required: false },
+          ],
+        });
+
+        expect(axiosInstance.post).toHaveBeenCalledWith('/api/role-templates', {
+          name: 'dev-mobile',
+          baseRole: 'dev',
+          baseBody: 'body',
+          description: 'Mobile dev template',
+          defaultSkills: [
+            { skillId: '11111111-1111-1111-1111-111111111111', required: true },
+            { skillId: '22222222-2222-2222-2222-222222222222', required: false },
+          ],
+        });
+      });
+
+      it('should bubble HAOpsApiError on 409 conflict', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: {
+            status: 409,
+            data: { error: "A role template named 'dev' already exists" },
+          },
+          message: 'Request failed with status code 409',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+          .fn()
+          .mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(
+          client.createRoleTemplate({
+            name: 'dev',
+            baseRole: 'dev',
+            baseBody: 'body',
+          }),
+        ).rejects.toThrow(HAOpsApiError);
+      });
+
+      it('should bubble HAOpsApiError on 404 (composed-protocols flag off)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+          .fn()
+          .mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(
+          client.createRoleTemplate({
+            name: 'x',
+            baseRole: 'dev',
+            baseBody: 'b',
+          }),
+        ).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
+    describe('updateRoleTemplate', () => {
+      it('should PUT only supplied fields and return the new row', async () => {
+        const mockTemplate = {
+          id: 'rt-3',
+          name: 'dev',
+          baseRole: 'dev',
+          version: 2,
+          isCurrent: true,
+        };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.put.mockResolvedValue({ data: mockTemplate });
+
+        const result = await client.updateRoleTemplate('dev', {
+          baseBody: '# New body',
+        });
+
+        expect(axiosInstance.put).toHaveBeenCalledWith('/api/role-templates/dev', {
+          baseBody: '# New body',
+        });
+        expect(result).toEqual(mockTemplate);
+      });
+
+      it('should forward an empty body for a no-op PUT (server returns current row unchanged)', async () => {
+        const mockTemplate = { id: 'rt-4', name: 'dev', version: 1 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.put.mockResolvedValue({ data: mockTemplate });
+
+        const result = await client.updateRoleTemplate('dev', {});
+
+        expect(axiosInstance.put).toHaveBeenCalledWith('/api/role-templates/dev', {});
+        expect(result).toEqual(mockTemplate);
+      });
+
+      it('should encode the template name into the URL path', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.put.mockResolvedValue({ data: { id: 'rt-5', name: 'team alpha' } });
+
+        await client.updateRoleTemplate('team alpha', { description: 'x' });
+
+        expect(axiosInstance.put).toHaveBeenCalledWith(
+          '/api/role-templates/team%20alpha',
+          { description: 'x' },
+        );
+      });
+
+      it('should forward description=null to clear the field', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.put.mockResolvedValue({ data: { id: 'rt-6', name: 'dev' } });
+
+        await client.updateRoleTemplate('dev', { description: null });
+
+        expect(axiosInstance.put).toHaveBeenCalledWith('/api/role-templates/dev', {
+          description: null,
+        });
+      });
+
+      it('should bubble HAOpsApiError on 404', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Role template not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+          .fn()
+          .mockReturnValue(true);
+        axiosInstance.put.mockRejectedValue(error);
+
+        await expect(
+          client.updateRoleTemplate('nonexistent', { baseBody: 'x' }),
+        ).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
+    describe('deprecateRoleTemplate', () => {
+      it('should DELETE and return the cascade summary', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const responseBody = { message: 'Role template deleted', versionCount: 3 };
+        axiosInstance.delete.mockResolvedValue({ data: responseBody });
+
+        const result = await client.deprecateRoleTemplate('custom-dev');
+
+        expect(axiosInstance.delete).toHaveBeenCalledWith('/api/role-templates/custom-dev');
+        expect(result).toEqual(responseBody);
+      });
+
+      it('should encode the template name into the URL path', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.delete.mockResolvedValue({
+          data: { message: 'Role template deleted', versionCount: 1 },
+        });
+
+        await client.deprecateRoleTemplate('team alpha');
+
+        expect(axiosInstance.delete).toHaveBeenCalledWith(
+          '/api/role-templates/team%20alpha',
+        );
+      });
+
+      it('should bubble HAOpsApiError on 403 (system template)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: {
+            status: 403,
+            data: { error: 'System role templates cannot be deleted' },
+          },
+          message: 'Request failed with status code 403',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+          .fn()
+          .mockReturnValue(true);
+        axiosInstance.delete.mockRejectedValue(error);
+
+        await expect(client.deprecateRoleTemplate('architect')).rejects.toThrow(
+          HAOpsApiError,
+        );
+      });
+
+      it('should bubble HAOpsApiError on 404', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Role template not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest
+          .fn()
+          .mockReturnValue(true);
+        axiosInstance.delete.mockRejectedValue(error);
+
+        await expect(client.deprecateRoleTemplate('nonexistent')).rejects.toThrow(
+          HAOpsApiError,
+        );
+      });
+    });
+  });
 });

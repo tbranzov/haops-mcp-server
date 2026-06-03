@@ -1903,6 +1903,101 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['name'],
         },
       },
+      {
+        name: 'haops_create_role_template',
+        description: 'Create a new agent role template (admin-only, requires composed-protocols feature flag). Templates are system-wide (no project scope) and always start at version=1, isCurrent=true, isSystem=false. `baseBody` is admin-trusted markdown. `defaultSkills` is the optional bundle of skill IDs auto-enabled when projects adopt the template (`required: true` makes the skill non-disable-able). Returns the created template row.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case template name (1..100 chars, starts with a letter). Must be unique among current (non-deleted) templates.',
+            },
+            baseRole: {
+              type: 'string',
+              enum: ['architect', 'dev', 'qa', 'devops', 'researcher', 'custom'],
+              description: 'Base role bucket the template extends.',
+            },
+            baseBody: {
+              type: 'string',
+              description: 'Verbatim markdown for the boot/scope/handoff section. Non-empty. Admin-trusted (no sanitization).',
+            },
+            description: {
+              type: 'string',
+              description: 'Optional short description shown in lists. Pass null to leave empty.',
+            },
+            defaultSkills: {
+              type: 'array',
+              description: 'Optional list of skill references to bundle with this template. Each entry is {skillId, required}. Duplicate skillIds are rejected. UUIDs must reference current, non-deprecated skills.',
+              items: {
+                type: 'object',
+                properties: {
+                  skillId: { type: 'string', description: 'UUID of the skill.' },
+                  required: {
+                    type: 'boolean',
+                    description: 'If true, projects cannot disable this skill when adopting the template.',
+                  },
+                },
+                required: ['skillId', 'required'],
+              },
+            },
+          },
+          required: ['name', 'baseRole', 'baseBody'],
+        },
+      },
+      {
+        name: 'haops_update_role_template',
+        description: 'Publish a new version of an existing role template (admin-only, requires composed-protocols feature flag). The server flips the current row to isCurrent=false and inserts a new row at version+1, transactionally. Only supply fields you want to change — a no-op call (no diff) returns the current row unchanged with version untouched. `name` and `isSystem` are immutable post-create.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case name of the template to update (path identifier).',
+            },
+            baseRole: {
+              type: 'string',
+              enum: ['architect', 'dev', 'qa', 'devops', 'researcher', 'custom'],
+              description: 'Optional. New base role bucket.',
+            },
+            baseBody: {
+              type: 'string',
+              description: 'Optional. New verbatim markdown — must be non-empty when supplied.',
+            },
+            description: {
+              type: 'string',
+              description: 'Optional. New short description. Pass null to clear.',
+            },
+            defaultSkills: {
+              type: 'array',
+              description: 'Optional. Replacement bundle of skill references (full set, not a diff). UUIDs must reference current, non-deprecated skills.',
+              items: {
+                type: 'object',
+                properties: {
+                  skillId: { type: 'string', description: 'UUID of the skill.' },
+                  required: { type: 'boolean' },
+                },
+                required: ['skillId', 'required'],
+              },
+            },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'haops_deprecate_role_template',
+        description: 'Soft-delete a role template, cascading across ALL versions (admin-only, requires composed-protocols feature flag). System templates (isSystem=true) cannot be deleted and return 403 — to "deprecate" a system template, publish a new version via haops_update_role_template or alter the seeder. Soft-deleted rows remain visible in the history endpoint for audit context.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case name of the template to deprecate.',
+            },
+          },
+          required: ['name'],
+        },
+      },
 
       // ===== Skill Pack Tools (F7) =====
       {
@@ -4846,6 +4941,140 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error reading role template: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_create_role_template') {
+    try {
+      const {
+        name: templateName,
+        baseRole,
+        baseBody,
+        description,
+        defaultSkills,
+      } = args as {
+        name: string;
+        baseRole: string;
+        baseBody: string;
+        description?: string | null;
+        defaultSkills?: Array<{ skillId: string; required: boolean }>;
+      };
+
+      const body: {
+        name: string;
+        baseRole: string;
+        baseBody: string;
+        description?: string | null;
+        defaultSkills?: Array<{ skillId: string; required: boolean }>;
+      } = { name: templateName, baseRole, baseBody };
+      if (description !== undefined) body.description = description;
+      if (defaultSkills !== undefined) body.defaultSkills = defaultSkills;
+
+      const template = await apiClient.createRoleTemplate(body);
+
+      const skills = Array.isArray(template.defaultSkills)
+        ? (template.defaultSkills as unknown[]).length
+        : 0;
+      const lines = [
+        `Role template created: ${template.name as string}`,
+        `ID: ${template.id as string}`,
+        `Base role: ${template.baseRole as string}`,
+        `Version: ${template.version ?? 1}`,
+        `Default skills: ${skills}`,
+      ];
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      // The composed-protocols flag flips POST → 404 by design. Surface a
+      // user-friendly hint so agents don't chase a missing-route bug when
+      // the surface is intentionally dormant.
+      const hint =
+        error instanceof Error && /404|not found/i.test(error.message)
+          ? ' (the composed-protocols feature may be disabled on the server)'
+          : '';
+      return {
+        content: [{ type: 'text', text: `Error creating role template: ${message}${hint}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_update_role_template') {
+    try {
+      const {
+        name: templateName,
+        baseRole,
+        description,
+        baseBody,
+        defaultSkills,
+      } = args as {
+        name: string;
+        baseRole?: string;
+        description?: string | null;
+        baseBody?: string;
+        defaultSkills?: Array<{ skillId: string; required: boolean }>;
+      };
+
+      const body: {
+        baseRole?: string;
+        description?: string | null;
+        baseBody?: string;
+        defaultSkills?: Array<{ skillId: string; required: boolean }>;
+      } = {};
+      if (baseRole !== undefined) body.baseRole = baseRole;
+      if (description !== undefined) body.description = description;
+      if (baseBody !== undefined) body.baseBody = baseBody;
+      if (defaultSkills !== undefined) body.defaultSkills = defaultSkills;
+
+      const template = await apiClient.updateRoleTemplate(templateName, body);
+
+      // Server returns the (possibly new) raw row — version bump signals a
+      // real publish vs. a no-op PUT. Surface both outcomes plainly so the
+      // agent knows whether a new version was created.
+      const skills = Array.isArray(template.defaultSkills)
+        ? (template.defaultSkills as unknown[]).length
+        : 0;
+      const lines = [
+        `Role template updated: ${template.name as string}`,
+        `ID: ${template.id as string}`,
+        `Base role: ${template.baseRole as string}`,
+        `Version: ${template.version ?? 'N/A'}`,
+        `Default skills: ${skills}`,
+      ];
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const hint =
+        error instanceof Error && /404|not found/i.test(error.message)
+          ? ' (the template name may be wrong, or the composed-protocols feature may be disabled on the server)'
+          : '';
+      return {
+        content: [{ type: 'text', text: `Error updating role template: ${message}${hint}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_deprecate_role_template') {
+    try {
+      const { name: templateName } = args as { name: string };
+      const result = await apiClient.deprecateRoleTemplate(templateName);
+      const lines = [
+        `Role template deprecated: ${templateName}`,
+        `Soft-deleted ${result.versionCount} version(s) (cascade)`,
+        result.message,
+      ];
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const hint =
+        error instanceof Error && /404|not found/i.test(error.message)
+          ? ' (the template name may be wrong, or the composed-protocols feature may be disabled on the server)'
+          : '';
+      return {
+        content: [{ type: 'text', text: `Error deprecating role template: ${message}${hint}` }],
         isError: true,
       };
     }

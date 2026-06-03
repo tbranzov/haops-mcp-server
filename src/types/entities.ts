@@ -284,6 +284,49 @@ export interface AgentMemory {
   meta: MemoryMeta;
 }
 
+// Role Templates (Agent Skills F2 — composed protocols)
+
+/**
+ * Base role bucket for a role template. Mirrors `BASE_ROLES` in
+ * `haops/lib/models/RoleTemplate.ts`. The `custom` value lets admins create
+ * role templates that don't map to one of the four canonical agent roles
+ * (architect/dev/qa/devops) — researcher slots are pre-blessed for the
+ * science-haops surface.
+ */
+export type BaseRole =
+  | 'architect'
+  | 'dev'
+  | 'qa'
+  | 'devops'
+  | 'researcher'
+  | 'custom';
+
+/**
+ * Shape of each entry in the `defaultSkills` JSONB column on RoleTemplate.
+ * `required: true` marks the skill as load-bearing for the template — the
+ * web UI disables the per-project toggle and the protocol resolver refuses
+ * to drop required skills (DECISIONS C2).
+ */
+export interface DefaultSkillRef {
+  skillId: string;
+  required: boolean;
+}
+
+export interface CreateRoleTemplateRequest {
+  name: string;
+  baseRole: BaseRole;
+  baseBody: string;
+  description?: string | null;
+  defaultSkills?: DefaultSkillRef[];
+}
+
+export interface UpdateRoleTemplateRequest {
+  baseRole?: BaseRole;
+  description?: string | null;
+  baseBody?: string;
+  defaultSkills?: DefaultSkillRef[];
+}
+
 // Team management entities
 
 export type ProjectMemberRole = 'owner' | 'admin' | 'project_manager' | 'member' | 'viewer';
