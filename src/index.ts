@@ -3184,6 +3184,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['projectSlug', 'ticketId', 'status'],
         },
       },
+      {
+        name: 'haops_rag_query',
+        description: 'Hybrid BM25+vector retrieval over a HAOps project corpus. Returns top-K chunks with entity citations. Example: { projectSlug: "fdev", text: "F4 manifest cache", topK: 5 }',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier) of the project to query' },
+            text: { type: 'string', description: 'Search query text (1–4096 chars)' },
+            topK: { type: 'number', description: 'Maximum chunks to return (1–50, default 8)' },
+            entityTypes: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Filter by entity types (e.g. ["feature", "module", "issue"]). Omit for all types.',
+            },
+            mode: {
+              type: 'string',
+              enum: ['hybrid', 'vector', 'bm25'],
+              description: 'Retrieval mode: "hybrid" (default, BM25+vector RRF), "vector" (dense only), "bm25" (keyword only)',
+            },
+            format: {
+              type: 'string',
+              enum: ['compact', 'ui'],
+              description: '"compact" (default) returns text+entityUrl+score; "ui" adds scoreComponents breakdown',
+            },
+          },
+          required: ['projectSlug', 'text'],
+        },
+      },
     ],
   };
 });
@@ -7228,6 +7256,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error closing ticket: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_rag_query') {
+    try {
+      const { projectSlug, text, topK, entityTypes, mode, format } = args as {
+        projectSlug: string;
+        text: string;
+        topK?: number;
+        entityTypes?: string[];
+        mode?: 'hybrid' | 'vector' | 'bm25';
+        format?: 'compact' | 'ui';
+      };
+      const body: Record<string, unknown> = { text };
+      if (topK !== undefined) body.topK = topK;
+      if (entityTypes !== undefined) body.entityTypes = entityTypes;
+      if (mode !== undefined) body.mode = mode;
+      if (format !== undefined) body.format = format;
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/rag/query`, body);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error querying RAG: ${message}` }], isError: true };
     }
   }
 
