@@ -13,7 +13,9 @@
     "test:unit": "jest src/",
     "test:integration": "jest tests/integration/",
     "test:contracts": "jest --config tests/contracts/jest.config.js",
-    "test:all": "jest"
+    "test:all": "jest",
+    "stats": "tsx scripts/mcp-stats.ts",
+    "stats:week": "tsx scripts/mcp-stats.ts --days 7"
   },
   "keywords": [
     "mcp",

@@ -27,6 +27,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import 'dotenv/config';
+import { recordToolCall } from './telemetry.js';
 
 const HAOPS_API_URL = process.env.HAOPS_API_URL || 'http://localhost:3000';
 const HAOPS_API_KEY = process.env.HAOPS_API_KEY;
@@ -53,6 +54,41 @@ function formatRelativeDate(dateStr: string): string {
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 30) return `${diffDays}d ago`;
   return date.toLocaleDateString();
+}
+
+/**
+ * Format a write-tool response in compact (default) or verbose mode.
+ *
+ * Compact: "{action} — {id} [{status}] {title}" ≤ ~200 chars.
+ *   Agents almost never read the full echo; compact saves context budget.
+ * Verbose: full pretty-printed JSON for debugging.
+ *
+ * Exported so unit tests can verify the formatter in isolation.
+ *
+ * @param action  - Past-tense verb ("created", "updated", "deleted", …)
+ * @param obj     - The API response object (must have at least { id })
+ * @param verbose - If true, return the full JSON instead
+ */
+export function formatWriteResult(
+  action: string,
+  obj: Record<string, unknown>,
+  verbose: boolean,
+): string {
+  if (verbose) {
+    return `${action.charAt(0).toUpperCase() + action.slice(1)} successfully:\n${JSON.stringify(obj, null, 2)}`;
+  }
+  const id = (obj.id as string | undefined) ?? '';
+  const title = (obj.title as string | undefined) ?? (obj.name as string | undefined) ?? '';
+  const status = (obj.status as string | undefined) ?? '';
+  const version = obj.version !== undefined ? ` v${obj.version}` : '';
+  let compact = `${action.charAt(0).toUpperCase() + action.slice(1)}`;
+  if (id) compact += ` — ${id}`;
+  if (status) compact += ` [${status}]`;
+  if (title) compact += ` "${title}"`;
+  if (version) compact += version;
+  // Hard cap at 200 chars (title truncation only)
+  if (compact.length > 200) compact = compact.slice(0, 197) + '…';
+  return compact;
 }
 
 /**
@@ -241,6 +277,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Internal notes for tracking progress (optional)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'title', 'ownerId'],
         },
@@ -292,6 +332,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             notes: {
               type: 'string',
               description: 'Internal notes for tracking progress (optional)',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'moduleId'],
@@ -349,6 +393,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Internal notes for tracking progress (optional)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'moduleId', 'title', 'ownerId'],
         },
@@ -404,6 +452,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             notes: {
               type: 'string',
               description: 'Internal notes for tracking progress (optional)',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'featureId'],
@@ -462,6 +514,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Internal notes for tracking progress (optional)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'featureId', 'title'],
         },
@@ -483,6 +539,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             confirm: {
               type: 'boolean',
               description: 'Set to true to confirm cascade deletion of child features and issues. Required if module has children.',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'moduleId'],
@@ -506,6 +566,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'boolean',
               description: 'Set to true to confirm cascade deletion of child issues. Required if feature has children.',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'featureId'],
         },
@@ -523,6 +587,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             issueId: {
               type: 'string',
               description: 'UUID of the issue to delete',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'issueId'],
@@ -581,6 +649,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Internal notes for tracking progress (optional)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'issueId'],
         },
@@ -617,6 +689,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                   description: 'UUID of the user to assign issues to',
                 },
               },
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'issueIds', 'updates'],
@@ -667,6 +743,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Content format for firstMessage (optional, default: markdown). Markdown is recommended for agents.',
               enum: ['text', 'markdown', 'html', 'code'],
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'title'],
@@ -745,6 +825,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'UUID of parent message for threaded replies (optional)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'discussionId', 'content'],
         },
@@ -771,6 +855,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Content format (optional, default: markdown)',
               enum: ['text', 'markdown', 'html', 'code'],
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'recipientUserId', 'content'],
@@ -905,6 +993,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'boolean',
               description: 'Whether the discussion is pinned (appears first in lists)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'discussionId'],
         },
@@ -923,6 +1015,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'UUID of the user whose messages to mark as read',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'userId'],
         },
@@ -940,6 +1036,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             discussionId: {
               type: 'string',
               description: 'UUID of the discussion to delete',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'discussionId'],
@@ -972,6 +1072,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: 'Content format (optional, default: markdown)',
               enum: ['text', 'markdown', 'html', 'code'],
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'discussionId', 'messageId', 'content'],
         },
@@ -993,6 +1097,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             messageId: {
               type: 'string',
               description: 'UUID of the message to delete',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'discussionId', 'messageId'],
@@ -1031,6 +1139,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: 'Project role (optional, default: member)',
               enum: ['admin', 'project_manager', 'member', 'viewer'],
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'userId'],
         },
@@ -1053,6 +1165,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'New project role',
               enum: ['admin', 'project_manager', 'member', 'viewer'],
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'userId', 'role'],
@@ -1122,6 +1238,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'boolean',
               description: 'Only check if claimable, do not actually claim (default: false)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['issueId'],
         },
@@ -1140,6 +1260,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'boolean',
               description: 'Only check if claimable, do not actually claim (default: false)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['featureId'],
         },
@@ -1157,6 +1281,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             checkOnly: {
               type: 'boolean',
               description: 'Only check if claimable, do not actually claim (default: false)',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['moduleId'],
@@ -1241,6 +1369,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'boolean',
               description: 'Whether to publish immediately (default: false)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['sectionSlug', 'title'],
         },
@@ -1280,6 +1412,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             isPublished: {
               type: 'boolean',
               description: 'Set published status (optional)',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['slug'],
@@ -1324,6 +1460,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Artifact description (optional)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'type', 'title'],
         },
@@ -1359,6 +1499,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Version string e.g. "1.0.0" (optional)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'artifactSlug'],
         },
@@ -1392,6 +1536,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             sourceHint: {
               type: 'string',
               description: 'Reference to source file e.g. "lib/models/User.ts" (optional)',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'artifactSlug', 'title'],
@@ -1430,6 +1578,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             slug: {
               type: 'string',
               description: 'New slug (optional). Must be unique among siblings under the same parent within the artifact; returns 409 on collision. Note: cannot address a section whose current slug is empty — fix that at the DB layer first.',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'artifactSlug', 'sectionSlug'],
@@ -1664,6 +1816,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Content of the log entry (markdown supported)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'entityType', 'entityId', 'tag', 'content'],
         },
@@ -1694,6 +1850,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             integrateUpTo: {
               type: 'string',
               description: 'ISO timestamp — mark all log entries up to this time as integrated. If omitted, all pending entries are marked.',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'entityType', 'entityId', 'newBaseText'],
@@ -1780,6 +1940,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                   description: 'Freeform markdown appended after the last skill section in composed mode.',
                 },
               },
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'role', 'content'],
@@ -1907,6 +2071,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Project slug — REQUIRED when scope="project"; MUST be omitted when scope="system".',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['scope', 'name', 'description', 'content', 'category', 'applicableRoles'],
         },
@@ -1953,6 +2121,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'boolean',
               description: 'Mark the skill as deprecated (the resolver hides deprecated skills from default manifests, but they remain readable).',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['name'],
         },
@@ -1976,6 +2148,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             projectSlug: {
               type: 'string',
               description: 'Project slug — REQUIRED when scope="project"; MUST be omitted when scope="system".',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['name'],
@@ -2053,6 +2229,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 required: ['skillId', 'required'],
               },
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['name', 'baseRole', 'baseBody'],
         },
@@ -2092,6 +2272,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 required: ['skillId', 'required'],
               },
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['name'],
         },
@@ -2105,6 +2289,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             name: {
               type: 'string',
               description: 'Kebab-case name of the template to deprecate.',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['name'],
@@ -2164,6 +2352,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'boolean',
               description: 'When true, the pack is surfaced in the curated onboarding default set. Defaults to false.',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['name', 'description', 'category'],
         },
@@ -2197,6 +2389,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'boolean',
               description: 'New featured flag.',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['name'],
         },
@@ -2211,6 +2407,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             name: {
               type: 'string',
               description: 'Kebab-case name of the pack to deprecate.',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['name'],
@@ -2251,6 +2451,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Project slug — REQUIRED when scope="project"; MUST be omitted when scope="system".',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['name', 'scope', 'action'],
         },
@@ -2271,6 +2475,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               enum: ['propose', 'publish', 'deprecate'],
               description: 'Lifecycle action: "propose" promotes a draft to proposed; "publish" promotes a proposed version to published; "deprecate" marks a published template as deprecated.',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['name', 'action'],
         },
@@ -2290,6 +2498,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               enum: ['propose', 'publish', 'deprecate'],
               description: 'Lifecycle action: "propose" promotes a draft pack to proposed; "publish" promotes a proposed pack to published; "deprecate" marks a published pack as deprecated.',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['name', 'action'],
@@ -2344,6 +2556,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 branches: { type: 'number' },
                 functions: { type: 'number' },
               },
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'runner', 'summary', 'results'],
@@ -2404,6 +2620,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             entityId: { type: 'string', description: 'UUID of the entity' },
             testIds: { type: 'array', items: { type: 'string' }, description: 'Explicit test UUIDs to link (optional)' },
             filePathPattern: { type: 'string', description: 'Glob pattern for file paths, e.g. "tests/e2e/auth/*" (optional)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'entityType', 'entityId'],
         },
@@ -2469,6 +2689,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 sourceProject: { type: 'string' },
               },
               required: ['suite', 'tests'],
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['projectSlug', 'bundle'],
@@ -2555,6 +2779,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Key UUID to revoke (required for revoke)',
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['action'],
         },
@@ -2572,6 +2800,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             targetBranch: { type: 'string', description: 'Target branch to merge into' },
             title: { type: 'string', description: 'MR title (max 255 chars)' },
             description: { type: 'string', description: 'MR description (optional)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'sourceBranch', 'targetBranch', 'title'],
         },
@@ -2613,6 +2845,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             mergeRequestId: { type: 'string', description: 'MR UUID' },
             verdict: { type: 'string', enum: ['approved', 'changes_requested', 'commented'], description: 'Review verdict' },
             body: { type: 'string', description: 'Review comment (optional)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'mergeRequestId', 'verdict'],
         },
@@ -2627,6 +2863,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             mergeRequestId: { type: 'string', description: 'MR UUID' },
             deleteSourceBranch: { type: 'boolean', description: 'Delete source branch after merge (default: false)' },
             mergeCommitMessage: { type: 'string', description: 'Custom merge commit message (optional)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'mergeRequestId'],
         },
@@ -2705,6 +2945,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: 'Image MIME type',
               enum: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'],
             },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'artifactSlug', 'sectionSlug', 'imageBase64', 'filename', 'mimeType'],
         },
@@ -2722,6 +2966,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Image MIME type',
               enum: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'],
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
           required: ['articleSlug', 'imageBase64', 'filename', 'mimeType'],
@@ -2849,6 +3097,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             notificationId: { type: 'string', description: 'UUID of the notification to mark as read' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['notificationId'],
         },
@@ -2891,6 +3143,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             name: { type: 'string', description: 'Channel name' },
             description: { type: 'string', description: 'Channel description (optional)' },
             type: { type: 'string', enum: ['general', 'announcements', 'dev', 'custom'], description: 'Channel type (optional, default: custom)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'name'],
         },
@@ -2905,6 +3161,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             channelId: { type: 'string', description: 'UUID of the channel to update' },
             name: { type: 'string', description: 'New channel name (optional)' },
             description: { type: 'string', description: 'New channel description (optional)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'channelId'],
         },
@@ -2917,6 +3177,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
             channelId: { type: 'string', description: 'UUID of the channel to delete' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'channelId'],
         },
@@ -2932,6 +3196,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             discussionId: { type: 'string', description: 'UUID of the discussion' },
             messageId: { type: 'string', description: 'UUID of the message to react to' },
             emoji: { type: 'string', description: 'Emoji to react with (e.g. "👍", "🎉")' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'discussionId', 'messageId', 'emoji'],
         },
@@ -2946,6 +3214,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             discussionId: { type: 'string', description: 'UUID of the discussion' },
             messageId: { type: 'string', description: 'UUID of the message to pin/unpin' },
             pinned: { type: 'boolean', description: 'true to pin, false to unpin' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'discussionId', 'messageId', 'pinned'],
         },
@@ -2959,6 +3231,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
             mergeRequestId: { type: 'string', description: 'UUID of the merge request to close' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'mergeRequestId'],
         },
@@ -2971,6 +3247,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
             mergeRequestId: { type: 'string', description: 'UUID of the merge request to reopen' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'mergeRequestId'],
         },
@@ -2997,6 +3277,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
             artifactSlug: { type: 'string', description: 'The doc artifact slug' },
             sectionSlug: { type: 'string', description: 'The section slug to delete' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'artifactSlug', 'sectionSlug'],
         },
@@ -3009,6 +3293,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
             artifactSlug: { type: 'string', description: 'The doc artifact slug to delete' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'artifactSlug'],
         },
@@ -3020,6 +3308,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug'],
         },
@@ -3043,6 +3335,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             sectionSlug: { type: 'string', description: 'The help section slug to delete' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['sectionSlug'],
         },
@@ -3054,6 +3350,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             articleSlug: { type: 'string', description: 'The help article slug to delete' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['articleSlug'],
         },
@@ -3071,6 +3371,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             name: { type: 'string', description: 'Repository name (required for create, optional for update)' },
             description: { type: 'string', description: 'Repository description (optional for create/update)' },
             defaultBranch: { type: 'string', description: 'Default branch name (optional for create/update)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'action'],
         },
@@ -3120,6 +3424,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             requesterName: { type: 'string', description: 'Display name of the requester' },
             priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], description: 'Ticket priority (default: medium)' },
             category: { type: 'string', description: 'Ticket category (must match project helpdesk categories)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'subject', 'content', 'requesterEmail'],
         },
@@ -3138,6 +3446,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             assignedToId: { type: 'string', description: 'Assignee user UUID' },
             tags: { type: 'array', items: { type: 'string' }, description: 'Array of tag strings to set on the ticket' },
             language: { type: 'string', enum: ['bg', 'en'], description: 'Ticket language for email templates (bg or en)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'ticketId'],
         },
@@ -3152,6 +3464,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             ticketId: { type: 'string', description: 'Ticket UUID' },
             content: { type: 'string', description: 'Message content (plain text or markdown)' },
             direction: { type: 'string', enum: ['outbound', 'internal'], description: 'outbound = email sent to requester; internal = private team note only' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'ticketId', 'content', 'direction'],
         },
@@ -3166,6 +3482,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             ticketId: { type: 'string', description: 'Ticket UUID' },
             action: { type: 'string', enum: ['claim', 'unclaim'], description: 'Action to perform (default: claim)' },
             force: { type: 'boolean', description: 'Force-claim even if already claimed by another user (PM+ only, default: false)' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'ticketId'],
         },
@@ -3180,6 +3500,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             ticketId: { type: 'string', description: 'Ticket UUID' },
             status: { type: 'string', enum: ['resolved', 'closed'], description: 'resolved = fixed, waiting for confirmation; closed = fully closed' },
             resolutionNote: { type: 'string', description: 'Optional resolution note included in the email sent to the requester when status is \'resolved\'.' },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
           },
           required: ['projectSlug', 'ticketId', 'status'],
         },
@@ -3221,6 +3545,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
  */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+
+  // Telemetry wrapper — executes the inner handler then records bytes
+  // fire-and-forget after the response is ready.
+  const _runTool = async (): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> => {
 
   if (name === 'haops_list_projects') {
     try {
@@ -3275,14 +3603,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (targetDate !== undefined) moduleData.targetDate = targetDate;
 
       const module = await apiClient.createModule(projectSlug, moduleData);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Module created successfully:\n${JSON.stringify(module, null, 2)}`,
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('created', module as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -3329,14 +3651,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (targetDate !== undefined) updateData.targetDate = targetDate;
 
       const module = await apiClient.updateModule(moduleId, updateData);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Module updated successfully:\n${JSON.stringify(module, null, 2)}`,
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('updated', module as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -3388,14 +3704,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (targetDate !== undefined) featureData.targetDate = targetDate;
 
       const feature = await apiClient.createFeature(featureData);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Feature created successfully:\n${JSON.stringify(feature, null, 2)}`,
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('created', feature as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -3445,14 +3755,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (targetDate !== undefined) updateData.targetDate = targetDate;
 
       const feature = await apiClient.updateFeature(featureId, updateData);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Feature updated successfully:\n${JSON.stringify(feature, null, 2)}`,
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('updated', feature as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -3504,14 +3808,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (assignedTo !== undefined) issueData.assignedTo = assignedTo;
 
       const issue = await apiClient.createIssue(issueData);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Issue created successfully:\n${JSON.stringify(issue, null, 2)}`,
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('created', issue as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -3561,14 +3859,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (assignedTo !== undefined) updateData.assignedTo = assignedTo;
 
       const issue = await apiClient.updateIssue(issueId, updateData);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Issue updated successfully:\n${JSON.stringify(issue, null, 2)}`,
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('updated', issue as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -3758,12 +4050,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       data.firstMessageContentType = (firstMessageContentType || 'markdown') as 'text' | 'markdown' | 'html' | 'code';
 
       const discussion = await apiClient.createDiscussion(projectSlug, data);
-      return {
-        content: [{
-          type: 'text',
-          text: `Discussion created successfully:\n${JSON.stringify(discussion, null, 2)}`,
-        }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('created', discussion as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -3846,12 +4134,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (parentMessageId !== undefined) data.parentMessageId = parentMessageId;
 
       const msg = await apiClient.postMessage(projectSlug, discussionId, data);
-      return {
-        content: [{
-          type: 'text',
-          text: `Message posted successfully:\n${JSON.stringify(msg, null, 2)}`,
-        }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('posted', msg as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -3879,12 +4163,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (contentType !== undefined) data.contentType = contentType as CreateDirectMessageRequest['contentType'];
 
       const dm = await apiClient.sendDM(projectSlug, recipientUserId, data);
-      return {
-        content: [{
-          type: 'text',
-          text: `Direct message sent successfully:\n${JSON.stringify(dm, null, 2)}`,
-        }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('sent', dm as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -4031,12 +4311,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (isPinned !== undefined) data.isPinned = isPinned;
 
       const discussion = await apiClient.updateDiscussion(projectSlug, discussionId, data);
-      return {
-        content: [{
-          type: 'text',
-          text: `Discussion updated successfully:\n${JSON.stringify(discussion, null, 2)}`,
-        }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('updated', discussion as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -4106,12 +4382,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (contentType) data.contentType = contentType;
 
       const msg = await apiClient.editMessage(projectSlug, discussionId, messageId, data);
-      return {
-        content: [{
-          type: 'text',
-          text: `Message edited successfully:\n${JSON.stringify(msg, null, 2)}`,
-        }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('edited', msg as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -4178,12 +4450,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         userId,
         role as ProjectMemberRole | undefined
       );
-      return {
-        content: [{
-          type: 'text',
-          text: `Member added successfully:\n${JSON.stringify(member, null, 2)}`,
-        }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('added', member as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -4206,12 +4474,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         userId,
         role as ProjectMemberRole
       );
-      return {
-        content: [{
-          type: 'text',
-          text: `Member role updated successfully:\n${JSON.stringify(member, null, 2)}`,
-        }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('updated', member as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -4280,15 +4544,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = await apiClient.claimIssue(issueId, {
         checkOnly: checkOnly || false,
       });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      const r = result as Record<string, unknown>;
+      const claimText = verbose
+        ? JSON.stringify(result, null, 2)
+        : `${r.success ? 'Claimed' : 'Check'} — ${(r.issue as Record<string, unknown>)?.id as string ?? issueId} [${(r.issue as Record<string, unknown>)?.status as string ?? ''}]`;
+      return { content: [{ type: 'text', text: claimText }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -4308,15 +4569,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = await apiClient.claimFeature(featureId, {
         checkOnly: checkOnly || false,
       });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      const r = result as Record<string, unknown>;
+      const claimText = verbose
+        ? JSON.stringify(result, null, 2)
+        : `${r.success ? 'Claimed' : 'Check'} — ${(r.feature as Record<string, unknown>)?.id as string ?? featureId} [${(r.feature as Record<string, unknown>)?.status as string ?? ''}]`;
+      return { content: [{ type: 'text', text: claimText }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -4336,15 +4594,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = await apiClient.claimModule(moduleId, {
         checkOnly: checkOnly || false,
       });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      const r = result as Record<string, unknown>;
+      const claimText = verbose
+        ? JSON.stringify(result, null, 2)
+        : `${r.success ? 'Claimed' : 'Check'} — ${(r.module as Record<string, unknown>)?.id as string ?? moduleId} [${(r.module as Record<string, unknown>)?.status as string ?? ''}]`;
+      return { content: [{ type: 'text', text: claimText }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -4433,9 +4688,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = await apiClient.request('POST', `/api/help/sections/${sectionSlug}/articles`, {
         title, content, isPublished,
       });
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('created', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
@@ -4465,9 +4719,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (content !== undefined) body.content = content;
       if (isPublished !== undefined) body.isPublished = isPublished;
       const result = await apiClient.request('PUT', `/api/help/articles/${slug}`, body);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('updated', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
@@ -4494,12 +4747,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { projectSlug, type, title, description } = args as {
         projectSlug: string; type: string; title: string; description?: string;
       };
+      const { verbose } = args as { verbose?: boolean };
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/docs`, {
         type, title, description,
       });
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      };
+      return { content: [{ type: 'text', text: formatWriteResult('created', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
@@ -4517,9 +4769,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (status !== undefined) body.status = status;
       if (version !== undefined) body.version = version;
       const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/docs/${artifactSlug}`, body);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('updated', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
@@ -4534,9 +4785,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/docs/${artifactSlug}/sections`, {
         title, content, parentId, sourceHint,
       });
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('created', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
@@ -4554,9 +4804,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (sourceHint !== undefined) body.sourceHint = sourceHint;
       if (slug !== undefined) body.slug = slug;
       const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/docs/${artifactSlug}/sections/${sectionSlug}`, body);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('updated', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
@@ -4791,16 +5040,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: string;
       };
 
+      const { verbose } = args as { verbose?: boolean };
       const entry = await apiClient.appendMemoryLog(
         projectSlug, entityType, entityId, tag as 'context' | 'decision' | 'progress' | 'issue' | 'review' | 'deploy', content,
       );
-
-      return {
-        content: [{
-          type: 'text',
-          text: `Memory log entry appended successfully:\n${JSON.stringify(entry, null, 2)}`,
-        }],
-      };
+      // Compact: {id, timestamp, tag} only — no content echo (M1+M5)
+      const e = entry as unknown as Record<string, unknown>;
+      const compactText = verbose
+        ? `Memory log entry appended:\n${JSON.stringify(entry, null, 2)}`
+        : `Memory appended — ${e.id as string} [${e.tag as string}] ${e.timestamp as string}`;
+      return { content: [{ type: 'text', text: compactText }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
@@ -5610,17 +5859,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const idCount = Array.isArray(pack.skillIds)
         ? (pack.skillIds as unknown[]).length
         : 0;
-      return {
-        content: [
-          {
-            type: 'text',
-            text:
-              `Skill pack created: ${pack.name as string} ` +
-              `(${pack.category as string}, ${idCount} skill(s))\n` +
-              JSON.stringify(pack, null, 2),
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: verbose
+        ? `Skill pack created: ${pack.name as string} (${pack.category as string}, ${idCount} skill(s))\n${JSON.stringify(pack, null, 2)}`
+        : `Created — ${pack.id as string} "${pack.name as string}" (${idCount} skills)` }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       // 404 from the gated POST means the feature flag is off on the server
@@ -5664,17 +5906,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const idCount = Array.isArray(pack.skillIds)
         ? (pack.skillIds as unknown[]).length
         : 0;
-      return {
-        content: [
-          {
-            type: 'text',
-            text:
-              `Skill pack updated: ${pack.name as string} ` +
-              `(${pack.category as string}, ${idCount} skill(s))\n` +
-              JSON.stringify(pack, null, 2),
-          },
-        ],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: verbose
+        ? `Skill pack updated: ${pack.name as string} (${pack.category as string}, ${idCount} skill(s))\n${JSON.stringify(pack, null, 2)}`
+        : `Updated — ${pack.id as string} "${pack.name as string}" (${idCount} skills)` }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       const statusCode =
@@ -5880,9 +6115,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (coverage !== undefined) payload.coverage = coverage;
 
       const result = await apiClient.reportTestRun(projectSlug, payload);
-      return {
-        content: [{ type: 'text', text: `Test run reported successfully:\n${JSON.stringify(result, null, 2)}` }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('reported', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error reporting test run: ${message}` }], isError: true };
@@ -5977,9 +6211,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         testIds,
         filePathPattern,
       });
-      return {
-        content: [{ type: 'text', text: `Tests linked successfully:\n${JSON.stringify(result, null, 2)}` }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('linked', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error linking tests: ${message}` }], isError: true };
@@ -6019,9 +6252,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         bundle: Record<string, unknown>;
       };
       const result = await apiClient.importTestSuite(projectSlug, bundle);
-      return {
-        content: [{ type: 'text', text: `Test suite imported successfully:\n${JSON.stringify(result, null, 2)}` }],
-      };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('imported', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error importing test suite: ${message}` }], isError: true };
@@ -6864,7 +7096,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (type) body.type = type;
 
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/channels`, body);
-      return { content: [{ type: 'text', text: `Channel created:\n${JSON.stringify(result, null, 2)}` }] };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('created', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error creating channel: ${message}` }], isError: true };
@@ -6885,7 +7118,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (description !== undefined) body.description = description;
 
       const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/channels/${channelId}`, body);
-      return { content: [{ type: 'text', text: `Channel updated:\n${JSON.stringify(result, null, 2)}` }] };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('updated', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error updating channel: ${message}` }], isError: true };
@@ -6945,7 +7179,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const { projectSlug, mergeRequestId } = args as { projectSlug: string; mergeRequestId: string };
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/git/merge-requests/${mergeRequestId}/close`);
-      return { content: [{ type: 'text', text: `Merge request closed:\n${JSON.stringify(result, null, 2)}` }] };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('closed', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error closing merge request: ${message}` }], isError: true };
@@ -6956,7 +7191,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const { projectSlug, mergeRequestId } = args as { projectSlug: string; mergeRequestId: string };
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/git/merge-requests/${mergeRequestId}/reopen`);
-      return { content: [{ type: 'text', text: `Merge request reopened:\n${JSON.stringify(result, null, 2)}` }] };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('reopened', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error reopening merge request: ${message}` }], isError: true };
@@ -7006,7 +7242,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const { projectSlug } = args as { projectSlug: string };
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/docs/changelog/generate`);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('generated', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error generating changelog: ${message}` }], isError: true };
@@ -7082,7 +7319,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (description) body.description = description;
         if (defaultBranch) body.defaultBranch = defaultBranch;
         const result = await apiClient.request('POST', `/api/projects/${projectSlug}/repositories`, body);
-        return { content: [{ type: 'text', text: `Repository created:\n${JSON.stringify(result, null, 2)}` }] };
+        const { verbose } = args as { verbose?: boolean };
+        return { content: [{ type: 'text', text: formatWriteResult('created', result as unknown as Record<string, unknown>, !!verbose) }] };
       }
 
       if (action === 'update') {
@@ -7094,7 +7332,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (description !== undefined) body.description = description;
         if (defaultBranch) body.defaultBranch = defaultBranch;
         const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/repositories/${repositoryId}`, body);
-        return { content: [{ type: 'text', text: `Repository updated:\n${JSON.stringify(result, null, 2)}` }] };
+        const { verbose } = args as { verbose?: boolean };
+        return { content: [{ type: 'text', text: formatWriteResult('updated', result as unknown as Record<string, unknown>, !!verbose) }] };
       }
 
       if (action === 'delete') {
@@ -7171,7 +7410,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (priority !== undefined) body.priority = priority;
       if (category !== undefined) body.category = category;
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/helpdesk/tickets`, body);
-      return { content: [{ type: 'text', text: `Ticket created:\n${JSON.stringify(result, null, 2)}` }] };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('created', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error creating ticket: ${message}` }], isError: true };
@@ -7198,7 +7438,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (tags !== undefined) body.tags = tags;
       if (language !== undefined) body.language = language;
       const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/helpdesk/tickets/${ticketId}`, body);
-      return { content: [{ type: 'text', text: `Ticket updated:\n${JSON.stringify(result, null, 2)}` }] };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('updated', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error updating ticket: ${message}` }], isError: true };
@@ -7215,7 +7456,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
       const body: Record<string, unknown> = { content, direction };
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/helpdesk/tickets/${ticketId}/messages`, body);
-      return { content: [{ type: 'text', text: `Message sent (${direction}):\n${JSON.stringify(result, null, 2)}` }] };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: verbose ? `Message sent (${direction}):\n${JSON.stringify(result, null, 2)}` : `Sent (${direction}) — ${(result as Record<string, unknown>).id as string ?? 'ok'}` }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error replying to ticket: ${message}` }], isError: true };
@@ -7234,7 +7476,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (action !== undefined) body.action = action;
       if (force !== undefined) body.force = force;
       const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/helpdesk/tickets/${ticketId}/claim`, body);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult('claimed', result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error claiming ticket: ${message}` }], isError: true };
@@ -7252,7 +7495,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const body: Record<string, unknown> = { status };
       if (resolutionNote !== undefined) body.resolutionNote = resolutionNote;
       const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/helpdesk/tickets/${ticketId}`, body);
-      return { content: [{ type: 'text', text: `Ticket ${status}:\n${JSON.stringify(result, null, 2)}` }] };
+      const { verbose } = args as { verbose?: boolean };
+      return { content: [{ type: 'text', text: formatWriteResult(status, result as unknown as Record<string, unknown>, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error closing ticket: ${message}` }], isError: true };
@@ -7283,6 +7527,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   throw new Error(`Unknown tool: ${name}`);
+  }; // end _runTool
+
+  const result = await _runTool();
+  // Fire-and-forget telemetry — must not block the response
+  const responseText = result.content.map((c) => c.text).join('');
+  recordToolCall(name, responseText);
+  return result;
 });
 
   return server;

@@ -203,6 +203,50 @@ MCP resources exposed by this server (with query filtering):
 - `haops://projects/{slug}/features?status=&priority=` - List features
 - `haops://projects/{slug}/issues?status=&priority=&assignedTo=&type=` - List issues
 
+## Quiet Mode (v2.8)
+
+All write tools (create/update/delete/claim/post/etc.) return a compact one-line
+summary by default to minimize context token usage:
+
+```
+Created — abc-123 [in-progress] "My new issue"
+```
+
+To get the full API response, pass `verbose: true` to any write tool:
+
+```json
+{ "issueId": "...", "title": "...", "verbose": true }
+```
+
+The special `haops_append_memory` tool returns `{id, timestamp, tag}` in compact
+mode (no echo of the content you just wrote). Read tools are unaffected.
+
+## Telemetry (v2.8)
+
+The server records response byte counts and call counts per tool to
+`~/.haops-mcp/stats/YYYY-MM-DD.jsonl` (fire-and-forget, zero hot-path overhead).
+
+View a report:
+
+```bash
+npm run stats             # today, top 20 tools by bytes
+npm run stats:week        # last 7 days combined
+npx tsx scripts/mcp-stats.ts --days 30 --top 10
+```
+
+Example output:
+```
+MCP Telemetry Report — today (2026-06-11)
+Total calls: 147 | Total bytes: 312.4 KB
+
+Tool                                                Calls  Total bytes  Avg bytes
+------------------------------------------------------------------------------------
+haops_read_memory                                      23      142.3 KB      6.3 KB
+haops_read_protocol                                    18       89.1 KB      4.9 KB
+haops_list_issues                                      31       44.2 KB      1.4 KB
+haops_create_issue                                     12          743 B         62 B
+```
+
 ## Tools
 
 MCP tools provided by this server (115 total). Key tools listed below — see `src/index.ts` for full list:
