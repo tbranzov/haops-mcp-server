@@ -2248,6 +2248,50 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
 
+      // ===== Protocol Preview Tool (P·B·I3) =====
+      {
+        name: 'haops_preview_project_protocol',
+        description:
+          'Dry-run the composed-protocol resolver for a project role — returns the assembled manifest as if PUT had been applied, WITHOUT persisting. Use BEFORE haops_update_protocol to verify that the new templateId / skillsConfig combo resolves correctly and has no warnings.\n\nWhen called with no optional params, previews the current protocol settings (useful for a sanity-check without triggering a version bump).\n\nThe response shape mirrors haops_read_protocol (mode, coreContent/body, skillRefs, warnings). The server adds `preview: true` to distinguish the response from a real read.\n\nRequires ENABLE_COMPOSED_PROTOCOLS=true on the server. Returns 404 when the feature flag is off (the route looks absent, by design) — surface this as "Composed protocols feature is disabled" to the user.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'URL slug of the target project (e.g. "fdev", "knf").',
+            },
+            role: {
+              type: 'string',
+              enum: ['architect', 'dev', 'qa', 'devops', 'researcher', 'custom'],
+              description: 'Agent role to resolve the protocol for.',
+            },
+            templateId: {
+              type: 'string',
+              description: 'Optional. UUID of the role template to resolve against. When omitted, the project\'s current templateId is used.',
+            },
+            enabledSkillIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional. UUIDs of skills to enable in the preview (merged with template defaults). Leave unset to use the project\'s current enabledSkillIds.',
+            },
+            disabledSkillIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional. UUIDs of skills to disable in the preview. Leave unset to use the project\'s current disabledSkillIds.',
+            },
+            customContent: {
+              type: 'string',
+              description: 'Optional. Custom markdown appended after the template body. Leave unset to use the project\'s current customContent.',
+            },
+            raw: {
+              type: 'boolean',
+              description: 'If true, return the raw JSON envelope verbatim instead of the formatted text summary (default: false).',
+            },
+          },
+          required: ['projectSlug', 'role'],
+        },
+      },
+
       // ===== Cascade Preview Tools (P·A·I4) =====
       {
         name: 'haops_preview_skill_cascade',
@@ -5849,6 +5893,92 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [{ type: 'text', text: `Error getting role template history: ${message}` }],
         isError: true,
       };
+    }
+  }
+
+  // ===== Protocol Preview Handler (P·B·I3) =====
+
+  if (name === 'haops_preview_project_protocol') {
+    try {
+      const { projectSlug, role, templateId, enabledSkillIds, disabledSkillIds, customContent, raw } = args as {
+        projectSlug: string;
+        role: string;
+        templateId?: string;
+        enabledSkillIds?: string[];
+        disabledSkillIds?: string[];
+        customContent?: string;
+        raw?: boolean;
+      };
+
+      const result = await apiClient.previewProjectProtocol(projectSlug, role, {
+        templateId,
+        enabledSkillIds,
+        disabledSkillIds,
+        customContent,
+      });
+
+      if (raw) {
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      // Reuse the same rendering logic as haops_read_protocol but prefix with
+      // a [DRY-RUN] banner so the agent cannot confuse this with a persisted read.
+      const protocolMode = (result.mode as string | undefined) ?? 'composed-lazy';
+      const versionStr = String(result.version ?? 'preview');
+      const bytes = (result.bytes as number | undefined) ?? 0;
+
+      const lines: string[] = [
+        `[DRY-RUN] Protocol preview for role "${role}" in project "${projectSlug}":`,
+        `Mode: ${protocolMode}`,
+        `Version (current): ${versionStr}`,
+      ];
+      if (bytes) lines.push(`Estimated bytes: ${bytes}`);
+      if (result.templateId != null) lines.push(`Template ID: ${result.templateId as string}`);
+
+      const sc = result.skillsConfig as Record<string, unknown> | null | undefined;
+      if (sc != null) {
+        const enabled = (sc.enabledSkillIds as string[] | undefined) ?? [];
+        const disabled = (sc.disabledSkillIds as string[] | undefined) ?? [];
+        const custom = sc.customContent as string | undefined;
+        if (enabled.length > 0) lines.push(`Skills enabled: ${enabled.join(', ')}`);
+        if (disabled.length > 0) lines.push(`Skills disabled: ${disabled.join(', ')}`);
+        if (custom) lines.push(`Custom content: (present, ${custom.length} chars)`);
+      }
+
+      const warnings = result.warnings as string[] | undefined;
+      if (warnings && warnings.length > 0) {
+        lines.push('');
+        lines.push('Warnings:');
+        for (const w of warnings) lines.push(`  - ${w}`);
+      }
+
+      const skillRefs = (result.skillRefs as Array<Record<string, unknown>> | undefined) ?? [];
+      if (skillRefs.length > 0) {
+        lines.push('');
+        lines.push(`Skill manifest (${skillRefs.length} skills — preview, NOT persisted):`);
+        for (const ref of skillRefs) {
+          const flags: string[] = [];
+          if (ref.required) flags.push('REQUIRED');
+          if (ref.deprecated) flags.push('DEPRECATED');
+          if (ref.missing) flags.push('MISSING');
+          const flagStr = flags.length ? ` [${flags.join(', ')}]` : '';
+          lines.push(`  - ${ref.name as string} (${ref.scope as string} v${ref.version})${flagStr}`);
+        }
+      }
+
+      lines.push('');
+      lines.push('--- Protocol body preview ---');
+      lines.push('');
+      const body = (result.coreContent as string) ?? (result.body as string) ?? '(empty)';
+      lines.push(body);
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const hint = message === 'Not found'
+        ? 'Error previewing protocol: Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Ask the admin to enable it before retrying.'
+        : `Error previewing protocol: ${message}`;
+      return { content: [{ type: 'text', text: hint }], isError: true };
     }
   }
 

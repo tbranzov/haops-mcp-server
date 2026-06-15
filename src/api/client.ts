@@ -1520,6 +1520,57 @@ export class HAOpsApiClient {
     }
   }
 
+  /**
+   * GET /api/projects/[slug]/protocol/preview
+   *
+   * Dry-run the composed-protocol resolver. Returns what the assembled protocol
+   * WOULD look like if the given templateId / skillsConfig were applied — without
+   * persisting anything. Equivalent to a read-only PUT simulation.
+   *
+   * Query params mirror the PUT body: role (required), optional templateId,
+   * optional skillsConfig encoded as JSON in the query string. When no options
+   * are given, the preview resolves the CURRENT project settings (useful for a
+   * plain sanity-check).
+   *
+   * Returns the same shape as GET /api/projects/[slug]/protocol: mode, body /
+   * coreContent + skillRefs + warnings. The server adds a `preview: true` flag
+   * so callers can tell the result was not persisted.
+   *
+   * Feature-flagged: the endpoint returns 404 when ENABLE_COMPOSED_PROTOCOLS is
+   * off (same "looks absent" pattern as the other composed-mode routes).
+   */
+  async previewProjectProtocol(
+    projectSlug: string,
+    role: string,
+    opts: {
+      templateId?: string;
+      enabledSkillIds?: string[];
+      disabledSkillIds?: string[];
+      customContent?: string;
+    } = {},
+  ): Promise<Record<string, unknown>> {
+    try {
+      const params = new URLSearchParams();
+      params.set('role', role);
+      if (opts.templateId) params.set('templateId', opts.templateId);
+      if (opts.enabledSkillIds && opts.enabledSkillIds.length > 0) {
+        params.set('enabledSkillIds', JSON.stringify(opts.enabledSkillIds));
+      }
+      if (opts.disabledSkillIds && opts.disabledSkillIds.length > 0) {
+        params.set('disabledSkillIds', JSON.stringify(opts.disabledSkillIds));
+      }
+      if (opts.customContent !== undefined) {
+        params.set('customContent', opts.customContent);
+      }
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/protocol/preview?${params.toString()}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   async updateProtocol(
     projectSlug: string,
     role: string,

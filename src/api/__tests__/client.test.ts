@@ -1550,6 +1550,69 @@ describe('HAOpsApiClient', () => {
       });
     });
 
+    // ===== P·B·I3: previewProjectProtocol =====
+
+    describe('previewProjectProtocol', () => {
+      const previewFixture = {
+        preview: true,
+        mode: 'composed-lazy',
+        version: 5,
+        bytes: 1200,
+        skillRefs: [{ name: 'code-review', scope: 'system', version: 1 }],
+        coreContent: '# Dev boot section',
+        warnings: [],
+      };
+
+      it('GETs /api/projects/[slug]/protocol/preview with role param', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: previewFixture });
+
+        const result = await client.previewProjectProtocol('fdev', 'dev');
+
+        const call = (axiosInstance.get.mock.calls[0][0] as string);
+        expect(call).toContain('/api/projects/fdev/protocol/preview');
+        expect(call).toContain('role=dev');
+        expect(result).toEqual(previewFixture);
+      });
+
+      it('includes templateId in query string when provided', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: previewFixture });
+
+        await client.previewProjectProtocol('fdev', 'dev', { templateId: 'tpl-uuid-1' });
+
+        const call = axiosInstance.get.mock.calls[0][0] as string;
+        expect(call).toContain('templateId=tpl-uuid-1');
+      });
+
+      it('JSON-encodes enabledSkillIds and disabledSkillIds', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: previewFixture });
+
+        await client.previewProjectProtocol('fdev', 'dev', {
+          enabledSkillIds: ['uuid-1', 'uuid-2'],
+          disabledSkillIds: ['uuid-3'],
+        });
+
+        const call = axiosInstance.get.mock.calls[0][0] as string;
+        expect(call).toContain('enabledSkillIds=');
+        expect(call).toContain('disabledSkillIds=');
+      });
+
+      it('surfaces HAOpsApiError on 404 (feature flag off)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.get.mockRejectedValue(error);
+
+        await expect(client.previewProjectProtocol('fdev', 'dev')).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
     // ===== P·B·I2: getSkillHistory + getRoleTemplateHistory =====
 
     describe('getSkillHistory', () => {
