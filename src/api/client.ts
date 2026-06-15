@@ -1498,6 +1498,43 @@ export class HAOpsApiClient {
    *     (raw DB shape, predates composed mode; mode/bundle params ignored).
    */
   /**
+   * POST /api/projects/[slug]/skills — create a project-scoped skill.
+   *
+   * Project-scoped skills are visible only to that project's protocol resolver.
+   * They follow the same kebab-case naming + category rules as system skills,
+   * but do NOT appear in haops_list_skills (system) unless scope='project' +
+   * projectSlug are explicitly passed.
+   *
+   * Returns the new Skill entity (status 201). 409 if a non-deleted project
+   * skill with the same name already exists in this project — use
+   * haops_update_skill(scope='project') to publish a new version instead.
+   *
+   * Admin-only, feature-flagged behind ENABLE_COMPOSED_PROTOCOLS (returns 404
+   * when off — "looks absent" pattern).
+   */
+  async createProjectSkill(
+    projectSlug: string,
+    body: {
+      name: string;
+      description: string;
+      content: string;
+      category: string;
+      applicableRoles: string[];
+      spawnLine?: string;
+    },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/skills`,
+        body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
    * GET /api/projects/[slug]/protocol/spawn-lines?role=
    *
    * Returns the per-role spawn-line text strings — the short boot-ritual lines

@@ -2248,6 +2248,53 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
 
+      // ===== Project-scope Skill Creation Tool (P·B·I5) =====
+      {
+        name: 'haops_create_project_skill',
+        description:
+          'Create a PROJECT-SCOPED skill (POST /api/projects/[slug]/skills). Project-scoped skills are visible only to that project\'s protocol resolver — they cannot be referenced by system role templates or other projects\' protocols. For skills you want reusable across all projects, use haops_create_skill with scope="system" instead.\n\nAdmin-only, requires ENABLE_COMPOSED_PROTOCOLS=true. Returns 409 if a non-deleted project skill with the same name already exists in this project — use haops_update_skill(scope="project", projectSlug=...) to publish a new version instead. Returns 404 when the feature flag is off.\n\nResponse includes id, scope="project", projectId and version=1.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'URL slug of the project this skill belongs to.',
+            },
+            name: {
+              type: 'string',
+              description: 'Kebab-case skill name (1..100 chars, starts with a letter). Must be unique among current (non-deleted) project-scoped skills in this project.',
+            },
+            description: {
+              type: 'string',
+              description: 'Short one-line description shown in list views and template pickers.',
+            },
+            content: {
+              type: 'string',
+              description: 'Full markdown body of the skill (admin-trusted; no sanitization applied server-side).',
+            },
+            category: {
+              type: 'string',
+              enum: ['review', 'planning', 'testing', 'deployment', 'communication', 'memory', 'safety', 'resilience', 'git', 'database', 'other'],
+              description: 'Skill category for grouping in the catalogue.',
+            },
+            applicableRoles: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Roles the skill applies to. Non-empty array of {architect, dev, qa, devops} or the wildcard ["*"].',
+            },
+            spawnLine: {
+              type: 'string',
+              description: 'Optional short text injected into the agent spawn-line when this skill is active. Leave unset to use the default spawn-line assembly.',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false).',
+            },
+          },
+          required: ['projectSlug', 'name', 'description', 'content', 'category', 'applicableRoles'],
+        },
+      },
+
       // ===== Spawn Lines Tool (P·B·I4) =====
       {
         name: 'haops_get_protocol_spawn_lines',
@@ -5917,6 +5964,73 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error getting role template history: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // ===== Project-scope Skill Creation Handler (P·B·I5) =====
+
+  if (name === 'haops_create_project_skill') {
+    try {
+      const {
+        projectSlug,
+        name: skillName,
+        description,
+        content,
+        category,
+        applicableRoles,
+        spawnLine,
+        verbose,
+      } = args as {
+        projectSlug: string;
+        name: string;
+        description: string;
+        content: string;
+        category: string;
+        applicableRoles: string[];
+        spawnLine?: string;
+        verbose?: boolean;
+      };
+
+      const body: Record<string, unknown> = {
+        name: skillName,
+        description,
+        content,
+        category,
+        applicableRoles,
+      };
+      if (spawnLine !== undefined) body.spawnLine = spawnLine;
+
+      const skill = await apiClient.createProjectSkill(projectSlug, {
+        name: skillName,
+        description,
+        content,
+        category,
+        applicableRoles,
+        spawnLine,
+      });
+
+      if (verbose) {
+        return { content: [{ type: 'text', text: JSON.stringify(skill, null, 2) }] };
+      }
+
+      const roles = Array.isArray(skill.applicableRoles)
+        ? (skill.applicableRoles as string[]).join(', ')
+        : 'unknown';
+      const lines = [
+        `Project skill created: ${skill.name as string}`,
+        `Project: ${projectSlug}${skill.projectId ? ` (projectId=${skill.projectId as string})` : ''}`,
+        `Scope: project`,
+        `Category: ${skill.category as string}`,
+        `Version: ${skill.version ?? 1}`,
+        `Applicable roles: ${roles}`,
+        `Skill ID: ${skill.id as string}`,
+      ];
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: formatSkillMutationError(error, 'creating project skill') }],
         isError: true,
       };
     }

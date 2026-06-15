@@ -1550,6 +1550,69 @@ describe('HAOpsApiClient', () => {
       });
     });
 
+    // ===== P·B·I5: createProjectSkill =====
+
+    describe('createProjectSkill', () => {
+      const skillBody = {
+        name: 'project-specific-review',
+        description: 'A project-level review skill',
+        content: '## Review steps',
+        category: 'review',
+        applicableRoles: ['architect'],
+      };
+
+      it('POSTs to /api/projects/[slug]/skills', async () => {
+        const mockSkill = { id: 'skill-uuid-1', name: 'project-specific-review', scope: 'project', projectId: 'proj-uuid-1', version: 1 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockSkill });
+
+        const result = await client.createProjectSkill('fdev', skillBody);
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/projects/fdev/skills',
+          skillBody,
+        );
+        expect(result).toEqual(mockSkill);
+      });
+
+      it('includes spawnLine in body when provided', async () => {
+        const mockSkill = { id: 'skill-uuid-2', name: 'project-specific-review', scope: 'project', version: 1 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockSkill });
+
+        await client.createProjectSkill('fdev', { ...skillBody, spawnLine: 'Custom spawn line' });
+
+        const callBody = axiosInstance.post.mock.calls[0][1] as Record<string, unknown>;
+        expect(callBody.spawnLine).toBe('Custom spawn line');
+      });
+
+      it('surfaces HAOpsApiError on 409 (name conflict)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 409, data: { error: 'A project skill with this name already exists' } },
+          message: 'Request failed with status code 409',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(client.createProjectSkill('fdev', skillBody)).rejects.toThrow(HAOpsApiError);
+      });
+
+      it('surfaces HAOpsApiError on 404 (feature flag off)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(client.createProjectSkill('fdev', skillBody)).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
     // ===== P·B·I4: getProtocolSpawnLines =====
 
     describe('getProtocolSpawnLines', () => {
