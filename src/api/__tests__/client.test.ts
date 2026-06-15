@@ -1171,4 +1171,248 @@ describe('HAOpsApiClient', () => {
     });
   });
 
+  // ===== Cascade Preview Tests (P·A·I4) =====
+
+  describe('Cascade Preview (P·A·I4)', () => {
+    // Shared fixture — a representative cascade preview response with all
+    // three consumer types populated.
+    const cascadePreviewFixture = {
+      count: 4,
+      templates: [
+        { templateId: 'tpl-uuid-1', templateName: 'dev', required: true },
+        { templateId: 'tpl-uuid-2', templateName: 'qa', required: false },
+      ],
+      protocolsBySkill: [
+        {
+          protocolId: 'proto-uuid-1',
+          projectId: 'proj-uuid-1',
+          role: 'architect',
+          version: 3,
+        },
+      ],
+      protocolsByTemplate: [],
+      packs: [
+        { packId: 'pack-uuid-1', packName: 'helpdesk-mvp' },
+      ],
+      warnings: [
+        "WARNING: skill is REQUIRED in template 'dev' (tpl-uuid-1). Without ?cascade=true the template will reference a stale (non-current) skill UUID.",
+      ],
+    };
+
+    describe('previewSkillCascade', () => {
+      it('GETs /api/skills/[name]/cascade-preview with scope=system', async () => {
+        const mockResponse = {
+          skillId: 'skill-uuid-1',
+          skillName: 'code-review',
+          cascadePreview: cascadePreviewFixture,
+        };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: mockResponse });
+
+        const result = await client.previewSkillCascade('code-review', 'system');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/skills/code-review/cascade-preview?scope=system',
+        );
+        expect(result).toEqual(mockResponse);
+      });
+
+      it('includes projectSlug when scope=project', async () => {
+        const mockResponse = {
+          skillId: 'skill-uuid-2',
+          skillName: 'project-deploy',
+          cascadePreview: { count: 0, templates: [], protocolsBySkill: [], protocolsByTemplate: [], packs: [], warnings: [] },
+        };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: mockResponse });
+
+        await client.previewSkillCascade('project-deploy', 'project', 'my-project');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/skills/project-deploy/cascade-preview?scope=project&projectSlug=my-project',
+        );
+      });
+
+      it('URL-encodes the skill name', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: { skillId: 'x', skillName: 'odd/name', cascadePreview: { count: 0, templates: [], protocolsBySkill: [], protocolsByTemplate: [], packs: [], warnings: [] } } });
+
+        await client.previewSkillCascade('odd/name', 'system');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/skills/odd%2Fname/cascade-preview?scope=system',
+        );
+      });
+
+      it('surfaces HAOpsApiError on 404 (skill not found)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Skill not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.get.mockRejectedValue(error);
+
+        await expect(
+          client.previewSkillCascade('nonexistent', 'system'),
+        ).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
+    describe('previewRoleTemplateCascade', () => {
+      const templateCascadeFixture = {
+        count: 2,
+        templates: [],
+        protocolsBySkill: [],
+        protocolsByTemplate: [
+          { protocolId: 'proto-uuid-1', projectId: 'proj-uuid-1', role: 'dev', version: 5, stale: true },
+          { protocolId: 'proto-uuid-2', projectId: 'proj-uuid-2', role: 'architect', version: 3, stale: true },
+        ],
+        packs: [],
+        warnings: [],
+      };
+
+      it('GETs /api/role-templates/[name]/cascade-preview', async () => {
+        const mockResponse = {
+          templateId: 'tpl-uuid-1',
+          templateName: 'dev',
+          cascadePreview: templateCascadeFixture,
+        };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: mockResponse });
+
+        const result = await client.previewRoleTemplateCascade('dev');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/role-templates/dev/cascade-preview',
+        );
+        expect(result).toEqual(mockResponse);
+      });
+
+      it('URL-encodes the template name', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: { templateId: 'x', templateName: 'odd/name', cascadePreview: { count: 0, templates: [], protocolsBySkill: [], protocolsByTemplate: [], packs: [], warnings: [] } } });
+
+        await client.previewRoleTemplateCascade('odd/name');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/role-templates/odd%2Fname/cascade-preview',
+        );
+      });
+
+      it('surfaces HAOpsApiError on 404 (template not found)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Role template not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.get.mockRejectedValue(error);
+
+        await expect(
+          client.previewRoleTemplateCascade('nonexistent'),
+        ).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
+    describe('updateSkill with cascade flag', () => {
+      it('PUT includes ?cascade=true when cascade=true', async () => {
+        const mockSkill = { id: 'skill-uuid-1', name: 'code-review', version: 2, scope: 'system' };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.put.mockResolvedValue({ data: mockSkill });
+
+        await client.updateSkill(
+          'code-review',
+          { scope: 'system', cascade: true },
+          { content: 'updated content' },
+        );
+
+        expect(axiosInstance.put).toHaveBeenCalledWith(
+          '/api/skills/code-review?scope=system&cascade=true',
+          { content: 'updated content' },
+        );
+      });
+
+      it('PUT without cascade flag does NOT append ?cascade=true', async () => {
+        const mockSkill = { id: 'skill-uuid-1', name: 'code-review', version: 2, scope: 'system' };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.put.mockResolvedValue({ data: mockSkill });
+
+        await client.updateSkill(
+          'code-review',
+          { scope: 'system' },
+          { content: 'updated content' },
+        );
+
+        // URL should not contain cascade
+        const callArg = axiosInstance.put.mock.calls[0][0] as string;
+        expect(callArg).not.toContain('cascade');
+      });
+
+      it('PUT with cascade=false does NOT append ?cascade=true', async () => {
+        const mockSkill = { id: 'skill-uuid-1', name: 'code-review', version: 2, scope: 'system' };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.put.mockResolvedValue({ data: mockSkill });
+
+        await client.updateSkill(
+          'code-review',
+          { scope: 'system', cascade: false },
+          { content: 'updated content' },
+        );
+
+        const callArg = axiosInstance.put.mock.calls[0][0] as string;
+        expect(callArg).not.toContain('cascade');
+      });
+    });
+
+    describe('updateRoleTemplate with cascade flag', () => {
+      it('PUT includes ?cascade=true when cascade=true', async () => {
+        const mockTemplate = { id: 'tpl-uuid-1', name: 'dev', version: 3 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.put.mockResolvedValue({ data: mockTemplate });
+
+        await client.updateRoleTemplate(
+          'dev',
+          { baseBody: 'updated body' },
+          { cascade: true },
+        );
+
+        expect(axiosInstance.put).toHaveBeenCalledWith(
+          '/api/role-templates/dev?cascade=true',
+          { baseBody: 'updated body' },
+        );
+      });
+
+      it('PUT without cascade opts does NOT append ?cascade=true', async () => {
+        const mockTemplate = { id: 'tpl-uuid-1', name: 'dev', version: 3 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.put.mockResolvedValue({ data: mockTemplate });
+
+        await client.updateRoleTemplate('dev', { baseBody: 'updated body' });
+
+        expect(axiosInstance.put).toHaveBeenCalledWith(
+          '/api/role-templates/dev',
+          { baseBody: 'updated body' },
+        );
+      });
+
+      it('PUT with cascade=false does NOT append query param', async () => {
+        const mockTemplate = { id: 'tpl-uuid-1', name: 'dev', version: 3 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.put.mockResolvedValue({ data: mockTemplate });
+
+        await client.updateRoleTemplate(
+          'dev',
+          { baseBody: 'updated body' },
+          { cascade: false },
+        );
+
+        const callArg = axiosInstance.put.mock.calls[0][0] as string;
+        expect(callArg).not.toContain('cascade');
+      });
+    });
+  });
+
 });

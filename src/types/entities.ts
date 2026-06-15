@@ -405,6 +405,88 @@ export interface UpdateRoleTemplateRequest {
   defaultSkills?: DefaultSkillRef[];
 }
 
+// ===== Cascade Preview Types (P·A·I4) =====
+
+/**
+ * Lightweight summary of a RoleTemplate row pinned to the old skill UUID.
+ * Mirrors TemplateConsumer in lib/protocols/cascadePreview.ts.
+ */
+export interface CascadeTemplateConsumer {
+  templateId: string;
+  templateName: string;
+  /** true if the stale skill was a REQUIRED entry in defaultSkills */
+  required: boolean;
+}
+
+/**
+ * Lightweight summary of a ProjectProtocol row pinned to the old skill UUID
+ * via skillsConfig.enabledSkillIds[].
+ */
+export interface CascadeProtocolSkillConsumer {
+  protocolId: string;
+  projectId: string;
+  role: string;
+  version: number;
+}
+
+/**
+ * Lightweight summary of a ProjectProtocol row pinned to the old template UUID
+ * via templateId column.
+ */
+export interface CascadeProtocolTemplateConsumer {
+  protocolId: string;
+  projectId: string;
+  role: string;
+  version: number;
+  stale: boolean;
+}
+
+/**
+ * Lightweight summary of a SkillPack row pinned to the old skill UUID.
+ */
+export interface CascadePackConsumer {
+  packId: string;
+  packName: string;
+}
+
+/**
+ * The cascade preview envelope returned by GET /api/skills/[name]/cascade-preview
+ * and GET /api/role-templates/[name]/cascade-preview.
+ *
+ * For skill previews: templates, protocolsBySkill, and packs are populated;
+ * protocolsByTemplate is empty (N/A for skill PUTs).
+ * For template previews: only protocolsByTemplate is populated.
+ *
+ * mirrors CascadePreview in lib/protocols/cascadePreview.ts.
+ */
+export interface CascadePreview {
+  count: number;
+  templates: CascadeTemplateConsumer[];
+  protocolsBySkill: CascadeProtocolSkillConsumer[];
+  protocolsByTemplate: CascadeProtocolTemplateConsumer[];
+  packs: CascadePackConsumer[];
+  /** REQUIRED skills that would become (missing) if the caller doesn't cascade. */
+  warnings: string[];
+}
+
+/**
+ * Response envelope from GET /api/skills/[name]/cascade-preview.
+ */
+export interface SkillCascadePreview {
+  skillId: string;
+  skillName: string;
+  cascadePreview: CascadePreview;
+}
+
+/**
+ * Response envelope from GET /api/role-templates/[name]/cascade-preview.
+ */
+export interface RoleTemplateCascadePreview {
+  templateId: string;
+  templateName: string;
+  cascadePreview: CascadePreview;
+}
+
 // Team management entities
 
 export type ProjectMemberRole = 'owner' | 'admin' | 'project_manager' | 'member' | 'viewer';

@@ -28,6 +28,8 @@ import type {
   UpdateSkillRequest,
   SkillScope,
   LifecycleTransitionAction,
+  SkillCascadePreview,
+  RoleTemplateCascadePreview,
 } from '../types/entities.js';
 
 interface PaginatedResponse<T> {
@@ -1693,6 +1695,10 @@ export class HAOpsApiClient {
     opts: {
       scope?: SkillScope;
       projectSlug?: string;
+      /** When true, appends ?cascade=true to atomically re-wire all consumers
+       *  (role templates, skill packs, project protocols) to the new UUID in
+       *  the same DB transaction. */
+      cascade?: boolean;
     },
     data: UpdateSkillRequest,
   ): Promise<Record<string, unknown>> {
@@ -1700,10 +1706,40 @@ export class HAOpsApiClient {
       const params = new URLSearchParams();
       if (opts.scope) params.set('scope', opts.scope);
       if (opts.projectSlug) params.set('projectSlug', opts.projectSlug);
+      if (opts.cascade) params.set('cascade', 'true');
       const query = params.toString();
       const response = await this.axios.put<Record<string, unknown>>(
         `/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`,
         data,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Preview which consumers reference the current UUID of a named skill.
+   *
+   * GET /api/skills/[name]/cascade-preview?scope=<scope>&projectSlug=<slug>
+   *
+   * Read-only — does not mutate. Call this BEFORE haops_update_skill with
+   * cascade=true to estimate blast radius.
+   *
+   * scope defaults to 'system'. For project-scoped skills pass
+   * scope='project' + projectSlug.
+   */
+  async previewSkillCascade(
+    name: string,
+    scope: 'system' | 'project',
+    projectSlug?: string,
+  ): Promise<SkillCascadePreview> {
+    try {
+      const params = new URLSearchParams();
+      params.set('scope', scope);
+      if (projectSlug) params.set('projectSlug', projectSlug);
+      const response = await this.axios.get<SkillCascadePreview>(
+        `/api/skills/${encodeURIComponent(name)}/cascade-preview?${params.toString()}`,
       );
       return response.data;
     } catch (error) {
@@ -1852,11 +1888,39 @@ export class HAOpsApiClient {
       baseBody?: string;
       defaultSkills?: Array<{ skillId: string; required: boolean }>;
     },
+    opts: {
+      /** When true, appends ?cascade=true to atomically re-wire all project
+       *  protocols pinned to the current template UUID to the new UUID. */
+      cascade?: boolean;
+    } = {},
   ): Promise<Record<string, unknown>> {
     try {
+      const params = new URLSearchParams();
+      if (opts.cascade) params.set('cascade', 'true');
+      const query = params.toString();
       const response = await this.axios.put<Record<string, unknown>>(
-        `/api/role-templates/${encodeURIComponent(name)}`,
+        `/api/role-templates/${encodeURIComponent(name)}${query ? `?${query}` : ''}`,
         body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * Preview which project protocols reference the current UUID of a named
+   * role template.
+   *
+   * GET /api/role-templates/[name]/cascade-preview
+   *
+   * Read-only — does not mutate. Call this BEFORE haops_update_role_template
+   * with cascade=true to estimate blast radius.
+   */
+  async previewRoleTemplateCascade(name: string): Promise<RoleTemplateCascadePreview> {
+    try {
+      const response = await this.axios.get<RoleTemplateCascadePreview>(
+        `/api/role-templates/${encodeURIComponent(name)}/cascade-preview`,
       );
       return response.data;
     } catch (error) {

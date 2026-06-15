@@ -2121,6 +2121,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'boolean',
               description: 'Mark the skill as deprecated (the resolver hides deprecated skills from default manifests, but they remain readable).',
             },
+            cascade: {
+              type: 'boolean',
+              description: 'When true, atomically re-wires all consumers (role templates with this skill in defaultSkills, skill packs containing this skill, project protocols with this skill in enabledSkillIds) to the NEW UUID in the same DB transaction. Recommended for any system skill bump. Default: false.',
+            },
             verbose: {
               type: 'boolean',
               description: 'If true, return the full API response instead of the compact summary (default: false)',
@@ -2152,6 +2156,55 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             verbose: {
               type: 'boolean',
               description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
+          },
+          required: ['name'],
+        },
+      },
+
+      // ===== Cascade Preview Tools (P·A·I4) =====
+      {
+        name: 'haops_preview_skill_cascade',
+        description:
+          "Preview which consumers (role templates, skill packs, project protocols) would need re-wiring if the named skill is bumped via PUT. Read-only — does not mutate. Use BEFORE calling `haops_update_skill({ ..., cascade: true })` on a high-impact skill to estimate blast radius.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case skill name to preview cascade impact for.',
+            },
+            scope: {
+              type: 'string',
+              enum: ['system', 'project'],
+              description: 'Scope of the target skill. Required.',
+            },
+            projectSlug: {
+              type: 'string',
+              description: 'Project slug — REQUIRED when scope="project"; MUST be omitted when scope="system".',
+            },
+            raw: {
+              type: 'boolean',
+              description: 'If true, return the raw JSON envelope verbatim instead of the formatted text summary (default: false).',
+            },
+          },
+          required: ['name', 'scope'],
+        },
+      },
+      {
+        name: 'haops_preview_role_template_cascade',
+        description:
+          "Preview which project protocols would need re-wiring if the named role template is bumped via PUT. Read-only — does not mutate. Use BEFORE calling `haops_update_role_template({ ..., cascade: true })` on a high-impact template to estimate blast radius.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case role template name to preview cascade impact for.',
+            },
+            raw: {
+              type: 'boolean',
+              description: 'If true, return the raw JSON envelope verbatim instead of the formatted text summary (default: false).',
             },
           },
           required: ['name'],
@@ -2271,6 +2324,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 },
                 required: ['skillId', 'required'],
               },
+            },
+            cascade: {
+              type: 'boolean',
+              description: 'When true, atomically re-wires all project protocols pinned to the current template UUID to the NEW UUID in the same DB transaction. Recommended for any system template bump. Default: false.',
             },
             verbose: {
               type: 'boolean',
@@ -5482,6 +5539,132 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
+  // ===== Cascade Preview Handlers (P·A·I4) =====
+
+  if (name === 'haops_preview_skill_cascade') {
+    try {
+      const { name: skillName, scope, projectSlug, raw } = args as {
+        name: string;
+        scope: 'system' | 'project';
+        projectSlug?: string;
+        raw?: boolean;
+      };
+
+      const preview = await apiClient.previewSkillCascade(skillName, scope, projectSlug);
+
+      if (raw) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(preview, null, 2) }],
+        };
+      }
+
+      const cp = preview.cascadePreview;
+      const lines: string[] = [
+        `If skill ${preview.skillName} (current UUID ${preview.skillId}) is bumped, the following consumers reference the CURRENT UUID and would need rewiring:`,
+        '',
+        `Role Templates (${cp.templates.length}):`,
+      ];
+      if (cp.templates.length === 0) {
+        lines.push('  (none)');
+      } else {
+        for (const t of cp.templates) {
+          const req = t.required ? ' [REQUIRED]' : '';
+          lines.push(`  - ${t.templateName} (defaultSkills[].skillId)${req}`);
+        }
+      }
+      lines.push('');
+      lines.push(`Skill Packs (${cp.packs.length}):`);
+      if (cp.packs.length === 0) {
+        lines.push('  (none)');
+      } else {
+        for (const p of cp.packs) {
+          lines.push(`  - ${p.packName} (skillIds[])`);
+        }
+      }
+      lines.push('');
+      lines.push(`Project Protocols (${cp.protocolsBySkill.length}):`);
+      if (cp.protocolsBySkill.length === 0) {
+        lines.push('  (none)');
+      } else {
+        for (const proto of cp.protocolsBySkill) {
+          lines.push(`  - project:${proto.projectId} role:${proto.role} v${proto.version} (skillsConfig.enabledSkillIds[])`);
+        }
+      }
+      if (cp.warnings.length > 0) {
+        lines.push('');
+        lines.push('Warnings:');
+        for (const w of cp.warnings) {
+          lines.push(`  ⚠  ${w}`);
+        }
+      }
+      lines.push('');
+      lines.push(`Total consumers: ${cp.count}`);
+      if (cp.count > 0) {
+        lines.push(`→ Run haops_update_skill({ name: "${skillName}", ..., cascade: true }) to re-wire atomically.`);
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const hint =
+        error instanceof Error && /404|not found/i.test(error.message)
+          ? ' (skill not found, or composed-protocols feature is disabled on the server)'
+          : '';
+      return {
+        content: [{ type: 'text', text: `Error previewing skill cascade: ${message}${hint}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_preview_role_template_cascade') {
+    try {
+      const { name: templateName, raw } = args as {
+        name: string;
+        raw?: boolean;
+      };
+
+      const preview = await apiClient.previewRoleTemplateCascade(templateName);
+
+      if (raw) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(preview, null, 2) }],
+        };
+      }
+
+      const cp = preview.cascadePreview;
+      const lines: string[] = [
+        `If role template ${preview.templateName} (current UUID ${preview.templateId}) is bumped, the following consumers reference the CURRENT UUID and would need rewiring:`,
+        '',
+        `Project Protocols (${cp.protocolsByTemplate.length}):`,
+      ];
+      if (cp.protocolsByTemplate.length === 0) {
+        lines.push('  (none)');
+      } else {
+        for (const proto of cp.protocolsByTemplate) {
+          lines.push(`  - project:${proto.projectId} role:${proto.role} v${proto.version} (templateId)`);
+        }
+      }
+      lines.push('');
+      lines.push(`Total consumers: ${cp.count}`);
+      if (cp.count > 0) {
+        lines.push(`→ Run haops_update_role_template({ name: "${templateName}", ..., cascade: true }) to re-wire atomically.`);
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const hint =
+        error instanceof Error && /404|not found/i.test(error.message)
+          ? ' (template not found, or composed-protocols feature is disabled on the server)'
+          : '';
+      return {
+        content: [{ type: 'text', text: `Error previewing role template cascade: ${message}${hint}` }],
+        isError: true,
+      };
+    }
+  }
+
   if (name === 'haops_update_skill') {
     try {
       const {
@@ -5493,6 +5676,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         category,
         applicableRoles,
         isDeprecated,
+        cascade,
       } = args as {
         name: string;
         scope?: 'system' | 'project';
@@ -5502,6 +5686,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         category?: string;
         applicableRoles?: string[];
         isDeprecated?: boolean;
+        cascade?: boolean;
       };
 
       // Build the payload from supplied fields only. The server requires at
@@ -5516,7 +5701,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const skill = await apiClient.updateSkill(
         skillName,
-        { scope, projectSlug },
+        { scope, projectSlug, cascade },
         payload as never,
       );
 
@@ -5723,12 +5908,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         description,
         baseBody,
         defaultSkills,
+        cascade,
       } = args as {
         name: string;
         baseRole?: string;
         description?: string | null;
         baseBody?: string;
         defaultSkills?: Array<{ skillId: string; required: boolean }>;
+        cascade?: boolean;
       };
 
       const body: {
@@ -5742,7 +5929,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (baseBody !== undefined) body.baseBody = baseBody;
       if (defaultSkills !== undefined) body.defaultSkills = defaultSkills;
 
-      const template = await apiClient.updateRoleTemplate(templateName, body);
+      const template = await apiClient.updateRoleTemplate(templateName, body, { cascade });
 
       // Server returns the (possibly new) raw row — version bump signals a
       // real publish vs. a no-op PUT. Surface both outcomes plainly so the
