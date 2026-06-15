@@ -1171,4 +1171,86 @@ describe('HAOpsApiClient', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // P·A·I1 — updateProtocol partial-body support.
+  //
+  // The server already supports carry-forward for every field in the protocol
+  // PUT route. The client-side change makes `content` optional and stops
+  // unconditionally placing it in the body, enabling agents to call with only
+  // `templateId` (to rebind a role template) or only `skillsConfig` (to toggle
+  // skills) without re-sending the full markdown body.
+  // ---------------------------------------------------------------------------
+  describe('updateProtocol partial-body (P·A·I1)', () => {
+    it('PUTs with { templateId } only — body must NOT contain a content field', async () => {
+      const mockResult = { id: 'proto-1', role: 'dev', version: 2, templateId: 'tmpl-uuid-xxx' };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: mockResult });
+
+      const result = await client.updateProtocol(
+        'fdev',
+        'dev',
+        undefined,       // content omitted
+        undefined,       // changeSummary omitted
+        'tmpl-uuid-xxx', // templateId provided
+        undefined,       // skillsConfig omitted
+      );
+
+      const putCall = axiosInstance.put.mock.calls[0];
+      const body = putCall[1] as Record<string, unknown>;
+      // content must NOT appear in the PUT body when not supplied
+      expect(body).not.toHaveProperty('content');
+      // templateId must be forwarded
+      expect(body.templateId).toBe('tmpl-uuid-xxx');
+      // role must always be present
+      expect(body.role).toBe('dev');
+      expect(result).toEqual(mockResult);
+    });
+
+    it('PUTs with { skillsConfig } only — body must NOT contain a content field', async () => {
+      const skillsConfig = { enabledSkillIds: ['skill-uuid-aaa', 'skill-uuid-bbb'] };
+      const mockResult = { id: 'proto-2', role: 'qa', version: 3 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: mockResult });
+
+      await client.updateProtocol(
+        'fdev',
+        'qa',
+        undefined,    // content omitted
+        undefined,    // changeSummary omitted
+        undefined,    // templateId omitted
+        skillsConfig, // skillsConfig provided
+      );
+
+      const putCall = axiosInstance.put.mock.calls[0];
+      const body = putCall[1] as Record<string, unknown>;
+      expect(body).not.toHaveProperty('content');
+      expect(body.skillsConfig).toEqual(skillsConfig);
+      expect(body.role).toBe('qa');
+    });
+
+    it('PUTs with { content, changeSummary } — backward-compatible (existing usage)', async () => {
+      const mockResult = { id: 'proto-3', role: 'architect', version: 5 };
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.put.mockResolvedValue({ data: mockResult });
+
+      await client.updateProtocol(
+        'fdev',
+        'architect',
+        '# Boot section\nThis is the full protocol.',
+        'Added new skill section',
+        undefined,
+        undefined,
+      );
+
+      const putCall = axiosInstance.put.mock.calls[0];
+      const body = putCall[1] as Record<string, unknown>;
+      expect(body.content).toBe('# Boot section\nThis is the full protocol.');
+      expect(body.changeSummary).toBe('Added new skill section');
+      expect(body.role).toBe('architect');
+      // templateId + skillsConfig must NOT appear when not supplied
+      expect(body).not.toHaveProperty('templateId');
+      expect(body).not.toHaveProperty('skillsConfig');
+    });
+  });
+
 });

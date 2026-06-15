@@ -1520,7 +1520,7 @@ export class HAOpsApiClient {
   async updateProtocol(
     projectSlug: string,
     role: string,
-    content: string,
+    content?: string,
     changeSummary?: string,
     templateId?: string | null,
     skillsConfig?: {
@@ -1530,7 +1530,12 @@ export class HAOpsApiClient {
     } | null,
   ): Promise<Record<string, unknown>> {
     try {
-      const body: Record<string, unknown> = { role, content };
+      // Only include fields that were explicitly provided so the server's
+      // carry-forward logic applies for everything omitted. This enables
+      // partial-body usage: pass only templateId to rebind a template, or
+      // only skillsConfig to toggle skills, without re-sending the full body.
+      const body: Record<string, unknown> = { role };
+      if (content !== undefined) body.content = content;
       if (changeSummary) body.changeSummary = changeSummary;
       // F3 composed-protocol fields — only include when explicitly provided so
       // the server's carry-forward logic applies when they are omitted.
