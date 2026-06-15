@@ -1509,7 +1509,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_create_doc_section',
-        description: 'Create a new section within a documentation artifact.',
+        description: 'Create a new section within a documentation artifact. IMPORTANT: Uses `artifactSlug` (kebab-case slug of the parent artifact, e.g. "deployment" or "api-routes") — NOT the artifact UUID. This is an exception: most other create-* tools use UUID identifiers. Use `haops_list_doc_artifacts` to find the slug for a given artifact before calling this tool.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1519,7 +1519,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             artifactSlug: {
               type: 'string',
-              description: 'The artifact slug',
+              description: 'Kebab-case slug of the parent documentation artifact (e.g. "deployment", "api-routes"). NOT a UUID — use haops_list_doc_artifacts to find the slug.',
             },
             title: {
               type: 'string',
@@ -1547,7 +1547,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_update_doc_section',
-        description: 'Update a documentation section content, title, slug, or source hint.',
+        description: 'Update a documentation section content, title, slug, or source hint. IMPORTANT: Uses `artifactSlug` (kebab-case slug of the parent artifact, e.g. "deployment" or "api-routes") — NOT the artifact UUID. This is an exception: most other update-* tools use UUID identifiers. Use `haops_list_doc_artifacts` to find the slug for a given artifact before calling this tool.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1557,7 +1557,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             artifactSlug: {
               type: 'string',
-              description: 'The artifact slug',
+              description: 'Kebab-case slug of the parent documentation artifact (e.g. "deployment", "api-routes"). NOT a UUID — use haops_list_doc_artifacts to find the slug.',
             },
             sectionSlug: {
               type: 'string',
@@ -1897,7 +1897,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_update_protocol',
-        description: 'Update (create new version of) the work protocol for a specific agent role in a project. Creates a new version and marks the previous as historical. Architect and admin roles ONLY.\n\nF3 composed-protocol fields (ENABLE_COMPOSED_PROTOCOLS must be ON):\n  • templateId — UUID of a RoleTemplate to associate, or null to detach. Omit to carry forward current value.\n  • skillsConfig — override which skills are active and inject custom content. Omit to carry forward. Set to null to clear.',
+        description: 'Update (create new version of) the work protocol for a specific agent role in a project. Creates a new version and marks the previous as historical. Architect and admin roles ONLY.\n\nPartial-body support: Provide ONLY the fields you want to change. Server carries forward unchanged fields.\n  • Common usage: pass only `templateId` to rebind a role template binding without re-sending the full markdown body.\n  • Common usage: pass only `skillsConfig` to enable/disable skills without re-sending the markdown body.\n  • Pass `content` only when you actually want to update the markdown text.\n\nF3 composed-protocol fields (ENABLE_COMPOSED_PROTOCOLS must be ON):\n  • templateId — UUID of a RoleTemplate to associate, or null to detach. Omit to carry forward current value.\n  • skillsConfig — override which skills are active and inject custom content. Omit to carry forward. Set to null to clear.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1911,7 +1911,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             content: {
               type: 'string',
-              description: 'The full protocol document in markdown',
+              description: 'The full protocol document in markdown. OPTIONAL — omit to carry forward the current body and only update other fields (e.g. templateId or skillsConfig).',
             },
             changeSummary: {
               type: 'string',
@@ -1946,7 +1946,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: 'If true, return the full API response instead of the compact summary (default: false)',
             },
           },
-          required: ['projectSlug', 'role', 'content'],
+          required: ['projectSlug', 'role'],
         },
       },
       {
@@ -2007,7 +2007,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_read_skill',
         description:
-          'Read a single skill by its kebab-case name. Returns full markdown content + metadata (category, applicableRoles, version, isDeprecated). Use this after haops_list_skills — or after a haops_read_protocol(mode="lazy") response\'s skillRefs[] manifest — to fetch the actual instructions on demand.',
+          'Read a single skill by its kebab-case name. Returns full markdown content + metadata (category, applicableRoles, version, ID, isDeprecated). Use this after haops_list_skills — or after a haops_read_protocol(mode="lazy") response\'s skillRefs[] manifest — to fetch the actual instructions on demand.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2028,6 +2028,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'number',
               description:
                 'F4 (v2.6): specific version number to read. If omitted, returns the current version. Used by lazy-loaded composed protocols to fetch a pinned version of a skill body.',
+            },
+            raw: {
+              type: 'boolean',
+              description: 'When true, return the full JSON envelope verbatim (includes UUIDs, audit metadata, skillsConfig, defaultSkills as structured JSON). Useful for programmatic inspection or piping into other tools.',
             },
           },
           required: ['name'],
@@ -2179,13 +2183,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_read_role_template',
-        description: 'Read a single role template by its kebab-case name. Returns the current version with `baseBody` (full markdown) + `defaultSkills` hydrated (each entry includes skill name + description). Use after haops_list_role_templates to fetch the full template contents.',
+        description: 'Read a single role template by its kebab-case name. Returns the current version with `baseBody` (full markdown) + `defaultSkills` hydrated (each entry includes skill name + description) + `ID` UUID. Use after haops_list_role_templates to fetch the full template contents.',
         inputSchema: {
           type: 'object',
           properties: {
             name: {
               type: 'string',
               description: 'Kebab-case template name (e.g. "architect", "dev").',
+            },
+            raw: {
+              type: 'boolean',
+              description: 'When true, return the full JSON envelope verbatim (includes UUIDs, audit metadata, defaultSkills as structured JSON). Useful for programmatic inspection or piping into other tools.',
             },
           },
           required: ['name'],
@@ -2429,7 +2437,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_transition_skill',
         description:
-          'Transition a skill through its lifecycle (propose / publish / deprecate). Hits POST /api/skills/[name]/[action]. The server enforces the allowed-from-here state machine — on a disallowed transition you get a 409 with `from`, `to`, and the `allowed` set listed in the response. Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true on the server. For project-scope skills pass scope="project" + projectSlug.',
+          'Transition a skill through its lifecycle (propose / publish / deprecate). Hits POST /api/skills/[name]/[action]. The server enforces the allowed-from-here state machine — on a disallowed transition you get a 409 with `from`, `to`, and the `allowed` set listed in the response. Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true on the server. For project-scope skills pass scope="project" + projectSlug.\n\nWARNING: The parameter is named `action` (values: propose/publish/deprecate) — NOT `status` or `targetStatus`. The underlying model field is called `status`, but the transition route uses `action` as the URL segment and the tool param name.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2445,7 +2453,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             action: {
               type: 'string',
               enum: ['propose', 'publish', 'deprecate'],
-              description: 'Lifecycle action: "propose" promotes a draft to proposed; "publish" promotes a proposed version to published; "deprecate" marks a published skill as deprecated (resolver hides it from default manifests).',
+              description: 'Lifecycle action to perform. Must be one of: "propose" (draft → proposed), "publish" (proposed → published), "deprecate" (published → deprecated). NOTE: this param is named `action`, NOT `status` or `targetStatus`.',
             },
             projectSlug: {
               type: 'string',
@@ -2462,7 +2470,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_transition_role_template',
         description:
-          'Transition a role template through its lifecycle (propose / publish / deprecate). Hits POST /api/role-templates/[name]/[action]. Role templates are system-wide — no scope axis. Server enforces the allowed-from-here state machine and returns 409 with `allowed` on a disallowed transition. System templates (isSystem=true) cannot be deprecated (server returns 403). Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true.',
+          'Transition a role template through its lifecycle (propose / publish / deprecate). Hits POST /api/role-templates/[name]/[action]. Role templates are system-wide — no scope axis. Server enforces the allowed-from-here state machine and returns 409 with `allowed` on a disallowed transition. System templates (isSystem=true) cannot be deprecated (server returns 403). Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true.\n\nWARNING: The parameter is named `action` (values: propose/publish/deprecate) — NOT `status` or `targetStatus`. The underlying model field is called `status`, but the transition route uses `action` as the URL segment and the tool param name.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2473,7 +2481,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             action: {
               type: 'string',
               enum: ['propose', 'publish', 'deprecate'],
-              description: 'Lifecycle action: "propose" promotes a draft to proposed; "publish" promotes a proposed version to published; "deprecate" marks a published template as deprecated.',
+              description: 'Lifecycle action to perform. Must be one of: "propose" (draft → proposed), "publish" (proposed → published), "deprecate" (published → deprecated). NOTE: this param is named `action`, NOT `status` or `targetStatus`.',
             },
             verbose: {
               type: 'boolean',
@@ -2486,7 +2494,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_transition_skill_pack',
         description:
-          'Transition a skill pack through its lifecycle (propose / publish / deprecate). Hits POST /api/skill-packs/[name]/[action]. Packs are unversioned and system-wide. Server enforces the allowed-from-here state machine and returns 409 with `allowed` on a disallowed transition. System packs (isSystem=true) cannot be deprecated (server returns 403 — update skillIds to [] via haops_update_skill_pack instead). Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true.',
+          'Transition a skill pack through its lifecycle (propose / publish / deprecate). Hits POST /api/skill-packs/[name]/[action]. Packs are unversioned and system-wide. Server enforces the allowed-from-here state machine and returns 409 with `allowed` on a disallowed transition. System packs (isSystem=true) cannot be deprecated (server returns 403 — update skillIds to [] via haops_update_skill_pack instead). Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true.\n\nWARNING: The parameter is named `action` (values: propose/publish/deprecate) — NOT `status` or `targetStatus`. The underlying model field is called `status`, but the transition route uses `action` as the URL segment and the tool param name.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2497,7 +2505,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             action: {
               type: 'string',
               enum: ['propose', 'publish', 'deprecate'],
-              description: 'Lifecycle action: "propose" promotes a draft pack to proposed; "publish" promotes a proposed pack to published; "deprecate" marks a published pack as deprecated.',
+              description: 'Lifecycle action to perform. Must be one of: "propose" (draft → proposed), "publish" (proposed → published), "deprecate" (published → deprecated). NOTE: this param is named `action`, NOT `status` or `targetStatus`.',
             },
             verbose: {
               type: 'boolean',
@@ -5248,7 +5256,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { projectSlug, role, content, changeSummary, templateId, skillsConfig } = args as {
         projectSlug: string;
         role: string;
-        content: string;
+        content?: string;
         changeSummary?: string;
         templateId?: string | null;
         skillsConfig?: {
@@ -5339,7 +5347,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      // One line per skill — name, scope, category, applicable roles, deprecated flag.
+      // One line per skill — name, scope, category, applicable roles, id, deprecated flag.
       // The full content is fetched on demand via haops_read_skill so we don't blow
       // the agent's context window on every list.
       const lines = [`Found ${skills.length} skill(s):`, ''];
@@ -5352,7 +5360,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const dep = s.isDeprecated ? ' [DEPRECATED]' : '';
         const ver = s.version ? ` v${s.version}` : '';
         const desc = s.description ? ` — ${s.description}` : '';
-        lines.push(`- ${s.name as string} (${scope}/${category}${ver}) roles=[${roles}]${dep}${desc}`);
+        const id = s.id ? ` (id: ${s.id as string})` : '';
+        lines.push(`- ${s.name as string} (${scope}/${category}${ver}) roles=[${roles}]${dep}${desc}${id}`);
       }
 
       return {
@@ -5369,20 +5378,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_read_skill') {
     try {
-      const { name: skillName, scope, projectSlug, version } = args as {
+      const { name: skillName, scope, projectSlug, version, raw } = args as {
         name: string;
         scope?: 'system' | 'project';
         projectSlug?: string;
         version?: number;
+        raw?: boolean;
       };
 
       const skill = await apiClient.readSkill(skillName, { scope, projectSlug, version });
+
+      if (raw) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(skill, null, 2) }],
+        };
+      }
 
       const roles = Array.isArray(skill.applicableRoles)
         ? (skill.applicableRoles as string[]).join(', ')
         : 'unknown';
       const header = [
         `Skill: ${skill.name as string}`,
+        `ID: ${skill.id as string}`,
         `Scope: ${skill.scope as string}`,
         `Category: ${skill.category as string}`,
         `Version: ${skill.version ?? 'N/A'}`,
@@ -5586,7 +5603,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       // One line per template — name, base role, system flag, default-skill
-      // count. The full baseBody is fetched on demand via
+      // count, id. The full baseBody is fetched on demand via
       // haops_read_role_template so we don't blow the agent's context window
       // on every list (baseBody can be 50-200 lines per template).
       const lines = [`Found ${templates.length} role template(s):`, ''];
@@ -5598,7 +5615,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ? (t.defaultSkills as unknown[]).length
           : 0;
         const desc = t.description ? ` — ${t.description as string}` : '';
-        lines.push(`- ${t.name as string} (${baseRole}${ver})${system} defaultSkills=${skills}${desc}`);
+        const id = t.id ? ` (id: ${t.id as string})` : '';
+        lines.push(`- ${t.name as string} (${baseRole}${ver})${system} defaultSkills=${skills}${desc}${id}`);
       }
 
       return {
@@ -5615,8 +5633,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_read_role_template') {
     try {
-      const { name: templateName } = args as { name: string };
+      const { name: templateName, raw } = args as { name: string; raw?: boolean };
       const template = await apiClient.readRoleTemplate(templateName);
+
+      if (raw) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(template, null, 2) }],
+        };
+      }
 
       // Default skills come back hydrated from the API (name + description
       // included). Render one line per skill so the agent gets the full
@@ -5634,6 +5658,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const header = [
         `Role Template: ${template.name as string}`,
+        `ID: ${template.id as string}`,
         `Base role: ${template.baseRole as string}`,
         `Version: ${template.version ?? 'N/A'}`,
         template.isSystem ? 'System: true (DELETE blocked at API)' : 'System: false',
@@ -5808,7 +5833,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       // One line per pack — name, category, system flag, featured flag,
-      // skillCount, short description tail. Skill IDs themselves are NOT
+      // skillCount, short description tail, id. Skill IDs themselves are NOT
       // hydrated server-side on the list endpoint (mirrors role-templates
       // pattern); agents can call GET /api/skill-packs/[name] via the admin
       // UI for hydration. Keeps the MCP response under any reasonable
@@ -5820,7 +5845,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const featured = p.isFeatured ? ' [featured]' : '';
         const skillIds = Array.isArray(p.skillIds) ? (p.skillIds as unknown[]).length : 0;
         const desc = p.description ? ` — ${p.description as string}` : '';
-        lines.push(`- ${p.name as string} (${cat})${featured}${system} skills=${skillIds}${desc}`);
+        const id = p.id ? ` (id: ${p.id as string})` : '';
+        lines.push(`- ${p.name as string} (${cat})${featured}${system} skills=${skillIds}${desc}${id}`);
       }
 
       return {
