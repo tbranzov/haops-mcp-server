@@ -1834,6 +1834,73 @@ export class HAOpsApiClient {
     }
   }
 
+  // ===== Skill & Role Template History Methods (P·B·I2) =====
+
+  /**
+   * GET /api/skills/[name]/history?scope=&projectSlug=&diff=
+   *
+   * Returns the full version history of a named skill. Each entry includes the
+   * version number, who published it, when, and the content at that version.
+   * When `diff=true` the server computes unified diffs between consecutive
+   * versions and includes a `diff` field on each entry (empty string for v1
+   * since there is no predecessor).
+   *
+   * 404 from this endpoint means either the skill does not exist, or the name +
+   * scope + projectSlug combo is wrong.
+   */
+  async getSkillHistory(
+    name: string,
+    opts: {
+      scope?: 'system' | 'project';
+      projectSlug?: string;
+      diff?: boolean;
+    } = {},
+  ): Promise<Array<Record<string, unknown>>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.scope) params.set('scope', opts.scope);
+      if (opts.projectSlug) params.set('projectSlug', opts.projectSlug);
+      if (opts.diff) params.set('diff', 'true');
+      const query = params.toString();
+      const response = await this.axios.get<Array<Record<string, unknown>>>(
+        `/api/skills/${encodeURIComponent(name)}/history${query ? `?${query}` : ''}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * GET /api/role-templates/[name]/history?diff=
+   *
+   * Returns the full version history of a named role template. Role templates
+   * are system-wide (no scope/projectSlug axis). When `diff=true` the server
+   * computes unified diffs between consecutive versions and includes a `diff`
+   * field on each entry.
+   *
+   * 404 means the template name does not exist (or all versions were
+   * soft-deleted — history only shows non-paranoid rows).
+   */
+  async getRoleTemplateHistory(
+    name: string,
+    opts: {
+      diff?: boolean;
+    } = {},
+  ): Promise<Array<Record<string, unknown>>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.diff) params.set('diff', 'true');
+      const query = params.toString();
+      const response = await this.axios.get<Array<Record<string, unknown>>>(
+        `/api/role-templates/${encodeURIComponent(name)}/history${query ? `?${query}` : ''}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   // ===== Role Template Methods (F2) =====
 
   /**

@@ -2191,6 +2191,63 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
 
+      // ===== History Tools (P·B·I2) =====
+      {
+        name: 'haops_get_skill_history',
+        description:
+          'Returns the full version history of a named skill (GET /api/skills/[name]/history). Each entry contains the version number, publication timestamp, author, lifecycle state, and full content at that point in time. When diff=true the server computes unified diffs between consecutive versions and includes a `diff` field per entry (empty for v1, which has no predecessor). Use to audit content changes, recover from a bad publish, or inspect the lineage before bumping a high-impact skill.\n\nAdministrative note: soft-deleted (deprecated) skills still have their history accessible via this endpoint — paranoid=false on the server join so full audit lineage is preserved.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case skill name.',
+            },
+            scope: {
+              type: 'string',
+              enum: ['system', 'project'],
+              description: 'Scope of the target skill. Defaults to "system".',
+            },
+            projectSlug: {
+              type: 'string',
+              description: 'Project slug — REQUIRED when scope="project"; MUST be omitted when scope="system".',
+            },
+            diff: {
+              type: 'boolean',
+              description: 'When true, the server computes unified diffs between consecutive versions and includes a `diff` field on each history entry. Omit or set false for metadata-only listing.',
+            },
+            raw: {
+              type: 'boolean',
+              description: 'If true, return the raw JSON array verbatim instead of the formatted text table (default: false).',
+            },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'haops_get_role_template_history',
+        description:
+          'Returns the full version history of a named role template (GET /api/role-templates/[name]/history). Role templates are system-wide (no scope/projectSlug). Each entry contains version, publication timestamp, author, lifecycle state, and the full `baseBody` markdown. When diff=true the server computes unified diffs between consecutive versions and includes a `diff` field per entry.\n\nUse to audit template content over time, recover from a bad publish, or inspect changes before bumping a template with `cascade=true`.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Kebab-case role template name.',
+            },
+            diff: {
+              type: 'boolean',
+              description: 'When true, the server computes unified diffs between consecutive versions and includes a `diff` field on each history entry.',
+            },
+            raw: {
+              type: 'boolean',
+              description: 'If true, return the raw JSON array verbatim instead of the formatted text table (default: false).',
+            },
+          },
+          required: ['name'],
+        },
+      },
+
       // ===== Cascade Preview Tools (P·A·I4) =====
       {
         name: 'haops_preview_skill_cascade',
@@ -5693,6 +5750,103 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       return {
         content: [{ type: 'text', text: formatSkillMutationError(error, 'creating skill') }],
+        isError: true,
+      };
+    }
+  }
+
+  // ===== History Handlers (P·B·I2) =====
+
+  if (name === 'haops_get_skill_history') {
+    try {
+      const { name: skillName, scope, projectSlug, diff, raw } = args as {
+        name: string;
+        scope?: 'system' | 'project';
+        projectSlug?: string;
+        diff?: boolean;
+        raw?: boolean;
+      };
+
+      const history = await apiClient.getSkillHistory(skillName, { scope, projectSlug, diff });
+
+      if (raw) {
+        return { content: [{ type: 'text', text: JSON.stringify(history, null, 2) }] };
+      }
+
+      if (history.length === 0) {
+        return { content: [{ type: 'text', text: `No history found for skill "${skillName}".` }] };
+      }
+
+      const lines = [
+        `Skill history: ${skillName} (${history.length} version(s))`,
+        '',
+      ];
+      for (const entry of history) {
+        lines.push(`Version ${entry.version ?? '?'} — ${entry.createdAt ?? entry.publishedAt ?? 'unknown date'}`);
+        if (entry.publishedBy ?? entry.createdBy) lines.push(`  Author: ${entry.publishedBy ?? entry.createdBy}`);
+        if (entry.lifecycleState ?? entry.status) lines.push(`  State: ${entry.lifecycleState ?? entry.status}`);
+        if (entry.description) lines.push(`  Description: ${entry.description as string}`);
+        if (diff && entry.diff) {
+          lines.push('  Diff:');
+          lines.push('  ```diff');
+          lines.push(`  ${(entry.diff as string).replace(/\n/g, '\n  ')}`);
+          lines.push('  ```');
+        }
+        lines.push('');
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error getting skill history: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  if (name === 'haops_get_role_template_history') {
+    try {
+      const { name: templateName, diff, raw } = args as {
+        name: string;
+        diff?: boolean;
+        raw?: boolean;
+      };
+
+      const history = await apiClient.getRoleTemplateHistory(templateName, { diff });
+
+      if (raw) {
+        return { content: [{ type: 'text', text: JSON.stringify(history, null, 2) }] };
+      }
+
+      if (history.length === 0) {
+        return { content: [{ type: 'text', text: `No history found for role template "${templateName}".` }] };
+      }
+
+      const lines = [
+        `Role template history: ${templateName} (${history.length} version(s))`,
+        '',
+      ];
+      for (const entry of history) {
+        lines.push(`Version ${entry.version ?? '?'} — ${entry.createdAt ?? entry.publishedAt ?? 'unknown date'}`);
+        if (entry.publishedBy ?? entry.createdBy) lines.push(`  Author: ${entry.publishedBy ?? entry.createdBy}`);
+        if (entry.lifecycleState ?? entry.status) lines.push(`  State: ${entry.lifecycleState ?? entry.status}`);
+        if (entry.baseRole) lines.push(`  Base role: ${entry.baseRole as string}`);
+        if (entry.description) lines.push(`  Description: ${entry.description as string}`);
+        if (diff && entry.diff) {
+          lines.push('  Diff:');
+          lines.push('  ```diff');
+          lines.push(`  ${(entry.diff as string).replace(/\n/g, '\n  ')}`);
+          lines.push('  ```');
+        }
+        lines.push('');
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error getting role template history: ${message}` }],
         isError: true,
       };
     }

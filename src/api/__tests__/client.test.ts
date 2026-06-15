@@ -1550,6 +1550,132 @@ describe('HAOpsApiClient', () => {
       });
     });
 
+    // ===== P·B·I2: getSkillHistory + getRoleTemplateHistory =====
+
+    describe('getSkillHistory', () => {
+      const historyFixture = [
+        { version: 1, createdAt: '2026-01-01T00:00:00Z', content: 'v1 body', lifecycleState: 'draft' },
+        { version: 2, createdAt: '2026-02-01T00:00:00Z', content: 'v2 body', lifecycleState: 'published', diff: '@@ -1 +1 @@\n-v1 body\n+v2 body' },
+      ];
+
+      it('GETs /api/skills/[name]/history with no options', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: historyFixture });
+
+        const result = await client.getSkillHistory('code-review');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith('/api/skills/code-review/history');
+        expect(result).toEqual(historyFixture);
+      });
+
+      it('appends ?scope= and ?projectSlug= when provided', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: historyFixture });
+
+        await client.getSkillHistory('my-skill', { scope: 'project', projectSlug: 'fdev' });
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/skills/my-skill/history?scope=project&projectSlug=fdev',
+        );
+      });
+
+      it('appends ?diff=true when diff=true', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: historyFixture });
+
+        await client.getSkillHistory('code-review', { diff: true });
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/skills/code-review/history?diff=true',
+        );
+      });
+
+      it('surfaces HAOpsApiError on 404 (skill not found)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Skill not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.get.mockRejectedValue(error);
+
+        await expect(client.getSkillHistory('nonexistent')).rejects.toThrow(HAOpsApiError);
+      });
+
+      it('URL-encodes skill names with special characters', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: [] });
+
+        await client.getSkillHistory('odd/name');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/skills/odd%2Fname/history',
+        );
+      });
+    });
+
+    describe('getRoleTemplateHistory', () => {
+      const templateHistoryFixture = [
+        { version: 1, createdAt: '2026-01-01T00:00:00Z', baseBody: '# Dev v1', lifecycleState: 'draft', baseRole: 'dev' },
+        { version: 2, createdAt: '2026-03-01T00:00:00Z', baseBody: '# Dev v2', lifecycleState: 'published', baseRole: 'dev', diff: '@@ -1 +1 @@\n-# Dev v1\n+# Dev v2' },
+      ];
+
+      it('GETs /api/role-templates/[name]/history with no options', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: templateHistoryFixture });
+
+        const result = await client.getRoleTemplateHistory('dev');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith('/api/role-templates/dev/history');
+        expect(result).toEqual(templateHistoryFixture);
+      });
+
+      it('appends ?diff=true when diff=true', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: templateHistoryFixture });
+
+        await client.getRoleTemplateHistory('architect', { diff: true });
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/role-templates/architect/history?diff=true',
+        );
+      });
+
+      it('surfaces HAOpsApiError on 404 (template not found)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Role template not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.get.mockRejectedValue(error);
+
+        await expect(client.getRoleTemplateHistory('nonexistent')).rejects.toThrow(HAOpsApiError);
+      });
+
+      it('returns empty array when history is empty', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: [] });
+
+        const result = await client.getRoleTemplateHistory('new-template');
+
+        expect(result).toEqual([]);
+      });
+
+      it('URL-encodes template names with special characters', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: [] });
+
+        await client.getRoleTemplateHistory('odd/template');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/role-templates/odd%2Ftemplate/history',
+        );
+      });
+    });
+
     describe('updateSkill with cascade flag', () => {
       it('PUT includes ?cascade=true when cascade=true', async () => {
         const mockSkill = { id: 'skill-uuid-1', name: 'code-review', version: 2, scope: 'system' };
