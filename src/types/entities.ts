@@ -405,6 +405,52 @@ export interface UpdateRoleTemplateRequest {
   defaultSkills?: DefaultSkillRef[];
 }
 
+// ===== Protocol Health (P·A·I3) =====
+
+/**
+ * Per-role health result returned by GET /api/projects/[slug]/protocol/health.
+ * Mirrors `HealthResult` from `haops/lib/models/ProtocolHealthSnapshot.ts`.
+ */
+export interface ProtocolRoleHealth {
+  warnings: string[];
+  skillCount: number;
+  missingCount: number;
+  deprecatedCount: number;
+  bytes: number;
+  isLegacy: boolean;
+  error?: string;
+}
+
+export interface ProtocolHealthPackWarning {
+  packId: string;
+  packName: string;
+  skillId: string;
+  reason: 'deprecated' | 'missing';
+}
+
+export interface ProtocolHealthResponse {
+  roles: {
+    architect: ProtocolRoleHealth;
+    dev: ProtocolRoleHealth;
+    qa: ProtocolRoleHealth;
+    devops: ProtocolRoleHealth;
+  };
+  summary: {
+    totalWarnings: number;
+    totalMissing: number;
+    totalDeprecated: number;
+    status: 'ok' | 'warn' | 'error';
+  };
+  packHealth: {
+    totalPacksScanned: number;
+    warnings: ProtocolHealthPackWarning[];
+  };
+  previousSnapshot: {
+    scannedAt: string;
+    roles: Partial<Record<'architect' | 'dev' | 'qa' | 'devops', ProtocolRoleHealth>>;
+  } | null;
+}
+
 // Team management entities
 
 export type ProjectMemberRole = 'owner' | 'admin' | 'project_manager' | 'member' | 'viewer';

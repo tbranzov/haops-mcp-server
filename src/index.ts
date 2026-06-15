@@ -1968,6 +1968,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
 
+      // ===== Protocol Health Tool (P·A·I3) =====
+      {
+        name: 'haops_get_protocol_health',
+        description:
+          'Returns per-role composed-protocol health: missing skill UUIDs, deprecated references, skill pack health, snapshot metadata. Surfaces drift programmatically (same data as the Project Settings → Protocol Health panel in HAOps Desktop UI). Requires ENABLE_COMPOSED_PROTOCOLS=true on the server.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: "Project slug, e.g. 'fdev', 'knf', 'ipro'",
+            },
+            includeSnapshots: {
+              type: 'boolean',
+              description: 'Include cached background-scan snapshots (default false)',
+            },
+            raw: {
+              type: 'boolean',
+              description: 'Return JSON envelope verbatim instead of formatted table',
+            },
+          },
+          required: ['projectSlug'],
+        },
+      },
+
       // ===== Skills Library Tools (F1) =====
       {
         name: 'haops_list_skills',
@@ -5321,6 +5346,123 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error listing protocol versions: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // ===== Protocol Health Handler (P·A·I3) =====
+
+  if (name === 'haops_get_protocol_health') {
+    try {
+      const { projectSlug, includeSnapshots, raw } = args as {
+        projectSlug: string;
+        includeSnapshots?: boolean;
+        raw?: boolean;
+      };
+
+      const health = await apiClient.getProtocolHealth(projectSlug, { includeSnapshots });
+
+      if (raw) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(health, null, 2) }],
+        };
+      }
+
+      // Formatted table output
+      const ROLES = ['architect', 'dev', 'qa', 'devops'] as const;
+      type RoleKey = (typeof ROLES)[number];
+
+      const pad = (s: string, n: number) => s.padEnd(n);
+      const header =
+        `${pad('Role', 13)}| ${pad('Status', 8)}| ${pad('Skills', 7)}| ${pad('Missing', 8)}| ${pad('Deprecated', 11)}| Size`;
+      const divider =
+        `${'-'.repeat(13)}|${'-'.repeat(9)}|${'-'.repeat(8)}|${'-'.repeat(9)}|${'-'.repeat(12)}|------`;
+
+      const rows: string[] = [header, divider];
+      const missingDetails: string[] = [];
+      const deprecatedDetails: string[] = [];
+
+      for (const role of ROLES) {
+        const r = health.roles[role as RoleKey];
+        // Determine per-role status
+        let roleStatus: string;
+        if (r.error) {
+          roleStatus = 'error';
+        } else if (r.missingCount > 0) {
+          roleStatus = 'error';
+        } else if (r.deprecatedCount > 0 || r.warnings.length > 0) {
+          roleStatus = 'warn';
+        } else if (r.isLegacy) {
+          roleStatus = 'legacy';
+        } else {
+          roleStatus = 'ok';
+        }
+
+        const sizeKb = r.bytes > 0 ? `${(r.bytes / 1024).toFixed(1)} KB` : '—';
+        rows.push(
+          `${pad(role, 13)}| ${pad(roleStatus, 8)}| ${pad(String(r.skillCount), 7)}| ${pad(String(r.missingCount), 8)}| ${pad(String(r.deprecatedCount), 11)}| ${sizeKb}`,
+        );
+
+        if (r.missingCount > 0 && r.warnings.length > 0) {
+          const missingWarnings = r.warnings.filter((w) => w.startsWith('missing:') || w.includes('missing'));
+          if (missingWarnings.length > 0) {
+            missingDetails.push(`  ${role}: ${missingWarnings.join(', ')}`);
+          } else {
+            missingDetails.push(`  ${role}: ${r.missingCount} missing skill(s) — see raw output for UUIDs`);
+          }
+        }
+
+        if (r.deprecatedCount > 0) {
+          const deprecatedWarnings = r.warnings.filter((w) => w.startsWith('deprecated:') || w.includes('deprecated'));
+          if (deprecatedWarnings.length > 0) {
+            deprecatedDetails.push(`  ${role}: ${deprecatedWarnings.join(', ')}`);
+          } else {
+            deprecatedDetails.push(`  ${role}: ${r.deprecatedCount} deprecated reference(s)`);
+          }
+        }
+      }
+
+      // Summary line
+      const summaryStatus = health.summary.status.toUpperCase();
+      rows.push('');
+      rows.push(`Summary: ${summaryStatus} — warnings=${health.summary.totalWarnings}, missing=${health.summary.totalMissing}, deprecated=${health.summary.totalDeprecated}`);
+
+      // Pack health
+      if (health.packHealth.warnings.length > 0) {
+        rows.push('');
+        rows.push(`Pack health: ${health.packHealth.warnings.length} warning(s) across ${health.packHealth.totalPacksScanned} pack(s) scanned`);
+        for (const w of health.packHealth.warnings) {
+          rows.push(`  ${w.packName} (${w.packId}): skill ${w.skillId} is ${w.reason}`);
+        }
+      }
+
+      // Detail blocks
+      if (missingDetails.length > 0) {
+        rows.push('');
+        rows.push('Missing skills:');
+        rows.push(...missingDetails);
+      }
+
+      if (deprecatedDetails.length > 0) {
+        rows.push('');
+        rows.push('Deprecated references:');
+        rows.push(...deprecatedDetails);
+      }
+
+      // Snapshot info
+      if (includeSnapshots && health.previousSnapshot) {
+        rows.push('');
+        rows.push(`Last background scan: ${health.previousSnapshot.scannedAt}`);
+      }
+
+      return {
+        content: [{ type: 'text', text: rows.join('\n') }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        content: [{ type: 'text', text: `Error getting protocol health: ${message}` }],
         isError: true,
       };
     }

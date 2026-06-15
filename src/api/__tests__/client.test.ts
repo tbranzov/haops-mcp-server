@@ -1250,6 +1250,153 @@ describe('HAOpsApiClient', () => {
       // templateId + skillsConfig must NOT appear when not supplied
       expect(body).not.toHaveProperty('templateId');
       expect(body).not.toHaveProperty('skillsConfig');
+  // P·A·I3 — getProtocolHealth client method.
+  //
+  // Wraps GET /api/projects/[slug]/protocol/health?includeSnapshots=<bool>.
+  // Guarantees:
+  //   (a) URL is /api/projects/{slug}/protocol/health — no extra path segments
+  //   (b) includeSnapshots=true is forwarded as a query param; false/omitted = no param
+  //   (c) response.data is returned unwrapped (no envelope)
+  //   (d) 404 → user-friendly HAOpsApiError about feature flag or project missing
+  //   (e) Other non-2xx → raw HAOpsApiError from handleError()
+  // ---------------------------------------------------------------------------
+  describe('getProtocolHealth (P·A·I3)', () => {
+    /** Minimal 4-role fixture — all ok, no drift */
+    const makeHealthFixture = (overrides: Record<string, unknown> = {}) => ({
+      roles: {
+        architect: { warnings: [], skillCount: 27, missingCount: 0, deprecatedCount: 0, bytes: 4096, isLegacy: false },
+        dev:       { warnings: [], skillCount: 22, missingCount: 0, deprecatedCount: 0, bytes: 1435, isLegacy: false },
+        qa:        { warnings: [], skillCount: 17, missingCount: 0, deprecatedCount: 0, bytes: 1536, isLegacy: false },
+        devops:    { warnings: [], skillCount: 22, missingCount: 0, deprecatedCount: 0, bytes: 2253, isLegacy: false },
+      },
+      summary: { totalWarnings: 0, totalMissing: 0, totalDeprecated: 0, status: 'ok' },
+      packHealth: { totalPacksScanned: 3, warnings: [] },
+      previousSnapshot: null,
+      ...overrides,
+    });
+
+    it('GETs /api/projects/{slug}/protocol/health with no query when includeSnapshots is omitted', async () => {
+      const fixture = makeHealthFixture();
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.get.mockResolvedValue({ data: fixture });
+
+      const result = await client.getProtocolHealth('fdev');
+
+      expect(axiosInstance.get).toHaveBeenCalledWith('/api/projects/fdev/protocol/health');
+      expect(result).toEqual(fixture);
+    });
+
+    it('appends ?includeSnapshots=true when the option is set', async () => {
+      const fixture = makeHealthFixture({
+        previousSnapshot: {
+          scannedAt: '2026-06-15T10:00:00.000Z',
+          roles: { architect: { warnings: [], skillCount: 26, missingCount: 0, deprecatedCount: 0, bytes: 4000, isLegacy: false } },
+        },
+      });
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.get.mockResolvedValue({ data: fixture });
+
+      const result = await client.getProtocolHealth('fdev', { includeSnapshots: true });
+
+      expect(axiosInstance.get).toHaveBeenCalledWith(
+        '/api/projects/fdev/protocol/health?includeSnapshots=true',
+      );
+      expect(result.previousSnapshot).not.toBeNull();
+    });
+
+    it('returns the response containing all 4 role names', async () => {
+      const fixture = makeHealthFixture();
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.get.mockResolvedValue({ data: fixture });
+
+      const result = await client.getProtocolHealth('fdev');
+
+      expect(result.roles).toHaveProperty('architect');
+      expect(result.roles).toHaveProperty('dev');
+      expect(result.roles).toHaveProperty('qa');
+      expect(result.roles).toHaveProperty('devops');
+    });
+
+    it('returns role data with missingCount > 0 when a role has drift', async () => {
+      const fixture = makeHealthFixture({
+        roles: {
+          architect: {
+            warnings: ['missing: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'],
+            skillCount: 27,
+            missingCount: 1,
+            deprecatedCount: 0,
+            bytes: 4096,
+            isLegacy: false,
+          },
+          dev:    { warnings: [], skillCount: 22, missingCount: 0, deprecatedCount: 0, bytes: 1435, isLegacy: false },
+          qa:     { warnings: [], skillCount: 17, missingCount: 0, deprecatedCount: 0, bytes: 1536, isLegacy: false },
+          devops: { warnings: [], skillCount: 22, missingCount: 0, deprecatedCount: 0, bytes: 2253, isLegacy: false },
+        },
+        summary: { totalWarnings: 1, totalMissing: 1, totalDeprecated: 0, status: 'error' },
+      });
+      const axiosInstance = mockCreate.mock.results[0].value;
+      axiosInstance.get.mockResolvedValue({ data: fixture });
+
+      const result = await client.getProtocolHealth('fdev');
+
+      expect(result.roles.architect.missingCount).toBe(1);
+      expect(result.summary.status).toBe('error');
+      expect(result.summary.totalMissing).toBe(1);
+    });
+
+    it('throws a user-friendly HAOpsApiError on 404 (feature flag off pattern)', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      const error = {
+        isAxiosError: true,
+        response: {
+          status: 404,
+          data: { error: 'Composed protocols are not enabled' },
+        },
+        message: 'Request failed with status code 404',
+      };
+      (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+      axiosInstance.get.mockRejectedValue(error);
+
+      await expect(client.getProtocolHealth('fdev')).rejects.toMatchObject({
+        name: 'HAOpsApiError',
+        statusCode: 404,
+        message: expect.stringContaining('Composed protocols feature may be disabled'),
+      });
+    });
+
+    it('throws HAOpsApiError on 404 for a non-existent project slug', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      const error = {
+        isAxiosError: true,
+        response: {
+          status: 404,
+          data: { error: 'Project not found' },
+        },
+        message: 'Request failed with status code 404',
+      };
+      (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+      axiosInstance.get.mockRejectedValue(error);
+
+      await expect(client.getProtocolHealth('nonexistent-slug')).rejects.toMatchObject({
+        name: 'HAOpsApiError',
+        statusCode: 404,
+      });
+    });
+
+    it('bubbles HAOpsApiError on 403 (forbidden)', async () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      const error = {
+        isAxiosError: true,
+        response: {
+          status: 403,
+          data: { error: 'Forbidden' },
+        },
+        message: 'Request failed with status code 403',
+      };
+      (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+      axiosInstance.get.mockRejectedValue(error);
+
+      await expect(client.getProtocolHealth('fdev')).rejects.toThrow(HAOpsApiError);
     });
   });
 

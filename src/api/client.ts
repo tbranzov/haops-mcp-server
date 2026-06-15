@@ -28,6 +28,7 @@ import type {
   UpdateSkillRequest,
   SkillScope,
   LifecycleTransitionAction,
+  ProtocolHealthResponse,
 } from '../types/entities.js';
 
 interface PaginatedResponse<T> {
@@ -1561,6 +1562,55 @@ export class HAOpsApiClient {
       );
       return response.data;
     } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * GET /api/projects/[slug]/protocol/health
+   *
+   * Returns per-role composed-protocol health: missing skill UUIDs, deprecated
+   * references, skill-pack warnings, and optional cached background-scan
+   * snapshot for the project.
+   *
+   * 404 from this endpoint means either:
+   *   (a) the project slug is not found, or
+   *   (b) ENABLE_COMPOSED_PROTOCOLS is off on the server.
+   * We surface a user-friendly message for case (b) rather than leaking the
+   * bare "Not found" / "Composed protocols are not enabled" error text.
+   *
+   * @param projectSlug   URL slug of the project (e.g. 'fdev', 'knf').
+   * @param includeSnapshots  When true, the server includes the most-recent
+   *   cached background-scan snapshot per role in `previousSnapshot`. When
+   *   false (default), `previousSnapshot` is omitted from the response.
+   */
+  async getProtocolHealth(
+    projectSlug: string,
+    opts: { includeSnapshots?: boolean } = {},
+  ): Promise<ProtocolHealthResponse> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.includeSnapshots) params.set('includeSnapshots', 'true');
+      const query = params.toString();
+      const response = await this.axios.get<ProtocolHealthResponse>(
+        `/api/projects/${projectSlug}/protocol/health${query ? `?${query}` : ''}`,
+      );
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const axiosError = error as AxiosError<{ error?: string }>;
+        if (axiosError.response?.status === 404) {
+          const serverMsg = axiosError.response.data?.error ?? '';
+          const isFeatureFlagOff =
+            serverMsg.includes('Composed protocols') ||
+            serverMsg === 'Not found' ||
+            serverMsg === '';
+          const friendlyMsg = isFeatureFlagOff
+            ? 'Composed protocols feature may be disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Ask the admin to enable it before retrying.'
+            : `Project not found: '${projectSlug}'`;
+          throw new HAOpsApiError(friendlyMsg, 404, axiosError.response.data);
+        }
+      }
       return this.handleError(error);
     }
   }
