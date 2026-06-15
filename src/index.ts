@@ -2248,6 +2248,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
 
+      // ===== Spawn Lines Tool (P·B·I4) =====
+      {
+        name: 'haops_get_protocol_spawn_lines',
+        description:
+          'Returns the per-role spawn-line text (GET /api/projects/[slug]/protocol/spawn-lines). Spawn lines are short boot-ritual strings injected at agent session start when composed protocols are active. Omit `role` to get spawn lines for ALL configured roles; pass a specific role to narrow to one.\n\nRead-only. Requires ENABLE_COMPOSED_PROTOCOLS=true. Returns 404 when the feature flag is off (the route looks absent by design) — surface this as "Composed protocols feature is disabled" to the user.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'URL slug of the target project.',
+            },
+            role: {
+              type: 'string',
+              enum: ['architect', 'dev', 'qa', 'devops', 'researcher', 'custom'],
+              description: 'Optional. If specified, returns spawn lines only for this role. Omit to get all roles.',
+            },
+            raw: {
+              type: 'boolean',
+              description: 'If true, return the raw JSON envelope verbatim (default: false).',
+            },
+          },
+          required: ['projectSlug'],
+        },
+      },
+
       // ===== Protocol Preview Tool (P·B·I3) =====
       {
         name: 'haops_preview_project_protocol',
@@ -5893,6 +5919,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [{ type: 'text', text: `Error getting role template history: ${message}` }],
         isError: true,
       };
+    }
+  }
+
+  // ===== Spawn Lines Handler (P·B·I4) =====
+
+  if (name === 'haops_get_protocol_spawn_lines') {
+    try {
+      const { projectSlug, role, raw } = args as {
+        projectSlug: string;
+        role?: string;
+        raw?: boolean;
+      };
+
+      const result = await apiClient.getProtocolSpawnLines(projectSlug, { role });
+
+      if (raw) {
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      const lines: string[] = [
+        `Spawn lines for project "${projectSlug}"${role ? ` (role: ${role})` : ' (all roles)'}:`,
+        '',
+      ];
+
+      // The server may return either { [role]: spawnLine } map or an array
+      // of { role, spawnLine } objects — handle both shapes defensively.
+      if (Array.isArray(result)) {
+        for (const entry of result as Array<Record<string, unknown>>) {
+          lines.push(`${entry.role as string}:`);
+          lines.push(`  ${entry.spawnLine as string}`);
+          lines.push('');
+        }
+      } else {
+        // Object map: { architect: '...', dev: '...', ... } or
+        // single { role, spawnLine } when a specific role was requested.
+        if (typeof result.spawnLine === 'string') {
+          // Single role response
+          lines.push(`${result.role as string}:`);
+          lines.push(`  ${result.spawnLine}`);
+        } else {
+          for (const [r, spawnLine] of Object.entries(result)) {
+            if (typeof spawnLine === 'string') {
+              lines.push(`${r}:`);
+              lines.push(`  ${spawnLine}`);
+              lines.push('');
+            }
+          }
+        }
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const hint = message === 'Not found'
+        ? 'Error getting spawn lines: Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Ask the admin to enable it before retrying.'
+        : `Error getting spawn lines: ${message}`;
+      return { content: [{ type: 'text', text: hint }], isError: true };
     }
   }
 

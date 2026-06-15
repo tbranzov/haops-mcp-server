@@ -1550,6 +1550,54 @@ describe('HAOpsApiClient', () => {
       });
     });
 
+    // ===== P·B·I4: getProtocolSpawnLines =====
+
+    describe('getProtocolSpawnLines', () => {
+      it('GETs /api/projects/[slug]/protocol/spawn-lines with no role filter', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: { architect: 'You are the architect...', dev: 'You are the dev...' } });
+
+        const result = await client.getProtocolSpawnLines('fdev');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith('/api/projects/fdev/protocol/spawn-lines');
+        expect(result).toHaveProperty('architect');
+      });
+
+      it('appends ?role= when role is provided', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: { role: 'dev', spawnLine: 'You are the dev...' } });
+
+        await client.getProtocolSpawnLines('fdev', { role: 'dev' });
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/projects/fdev/protocol/spawn-lines?role=dev',
+        );
+      });
+
+      it('surfaces HAOpsApiError on 404 (feature flag off)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.get.mockRejectedValue(error);
+
+        await expect(client.getProtocolSpawnLines('fdev')).rejects.toThrow(HAOpsApiError);
+      });
+
+      it('returns the raw response object', async () => {
+        const mockData = { architect: 'line1', dev: 'line2', qa: 'line3' };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: mockData });
+
+        const result = await client.getProtocolSpawnLines('myproject');
+
+        expect(result).toEqual(mockData);
+      });
+    });
+
     // ===== P·B·I3: previewProjectProtocol =====
 
     describe('previewProjectProtocol', () => {

@@ -1497,6 +1497,36 @@ export class HAOpsApiClient {
    *   - `version`: existing behaviour — when set, returns that historical row
    *     (raw DB shape, predates composed mode; mode/bundle params ignored).
    */
+  /**
+   * GET /api/projects/[slug]/protocol/spawn-lines?role=
+   *
+   * Returns the per-role spawn-line text strings — the short boot-ritual lines
+   * injected at agent session start when using composed protocols. When `role`
+   * is omitted, returns spawn lines for ALL configured roles. When specified,
+   * returns only the entry for that role.
+   *
+   * Read-only. Feature-flagged (404 when ENABLE_COMPOSED_PROTOCOLS is off,
+   * same "looks absent" pattern as other composed-mode routes).
+   */
+  async getProtocolSpawnLines(
+    projectSlug: string,
+    opts: {
+      role?: string;
+    } = {},
+  ): Promise<Record<string, unknown>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.role) params.set('role', opts.role);
+      const query = params.toString();
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/protocol/spawn-lines${query ? `?${query}` : ''}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   async readProtocol(
     projectSlug: string,
     role: string,
