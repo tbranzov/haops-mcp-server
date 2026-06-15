@@ -1550,6 +1550,400 @@ describe('HAOpsApiClient', () => {
       });
     });
 
+    // ===== P·B·I6: bulkPublishSkills =====
+
+    describe('bulkPublishSkills', () => {
+      const entries = [
+        { name: 'code-review', scope: 'system' as const, content: 'updated review' },
+        { name: 'deploy-check', scope: 'system' as const, content: 'updated deploy' },
+      ];
+
+      const successResponse = {
+        totalUpdated: 2,
+        totalFailed: 0,
+        results: [
+          { name: 'code-review', scope: 'system', success: true, version: 3 },
+          { name: 'deploy-check', scope: 'system', success: true, version: 2 },
+        ],
+      };
+
+      it('POSTs to /api/skills/bulk-publish with entries', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: successResponse });
+
+        const result = await client.bulkPublishSkills(entries);
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/skills/bulk-publish',
+          { entries },
+        );
+        expect(result.totalUpdated).toBe(2);
+        expect(result.totalFailed).toBe(0);
+      });
+
+      it('includes cascade=true in body when cascade=true', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: successResponse });
+
+        await client.bulkPublishSkills(entries, { cascade: true });
+
+        const callBody = axiosInstance.post.mock.calls[0][1] as Record<string, unknown>;
+        expect(callBody.cascade).toBe(true);
+      });
+
+      it('does NOT include cascade in body when cascade=false', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: successResponse });
+
+        await client.bulkPublishSkills(entries, { cascade: false });
+
+        const callBody = axiosInstance.post.mock.calls[0][1] as Record<string, unknown>;
+        expect(callBody.cascade).toBeUndefined();
+      });
+
+      it('surfaces partial-failure response correctly', async () => {
+        const partialFailResponse = {
+          totalUpdated: 0,
+          totalFailed: 1,
+          results: [
+            { name: 'nonexistent-skill', scope: 'system', success: false, error: 'Skill not found' },
+          ],
+        };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: partialFailResponse });
+
+        const result = await client.bulkPublishSkills([{ name: 'nonexistent-skill', scope: 'system' }]);
+
+        expect(result.totalFailed).toBe(1);
+        expect(result.results[0].success).toBe(false);
+        expect(result.results[0].error).toBe('Skill not found');
+      });
+
+      it('surfaces HAOpsApiError on 404 (feature flag off)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(client.bulkPublishSkills(entries)).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
+    // ===== P·B·I5: createProjectSkill =====
+
+    describe('createProjectSkill', () => {
+      const skillBody = {
+        name: 'project-specific-review',
+        description: 'A project-level review skill',
+        content: '## Review steps',
+        category: 'review',
+        applicableRoles: ['architect'],
+      };
+
+      it('POSTs to /api/projects/[slug]/skills', async () => {
+        const mockSkill = { id: 'skill-uuid-1', name: 'project-specific-review', scope: 'project', projectId: 'proj-uuid-1', version: 1 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockSkill });
+
+        const result = await client.createProjectSkill('fdev', skillBody);
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/projects/fdev/skills',
+          skillBody,
+        );
+        expect(result).toEqual(mockSkill);
+      });
+
+      it('includes spawnLine in body when provided', async () => {
+        const mockSkill = { id: 'skill-uuid-2', name: 'project-specific-review', scope: 'project', version: 1 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockSkill });
+
+        await client.createProjectSkill('fdev', { ...skillBody, spawnLine: 'Custom spawn line' });
+
+        const callBody = axiosInstance.post.mock.calls[0][1] as Record<string, unknown>;
+        expect(callBody.spawnLine).toBe('Custom spawn line');
+      });
+
+      it('omits spawnLine from body when not provided', async () => {
+        const mockSkill = { id: 'skill-uuid-3', name: 'project-specific-review', scope: 'project', version: 1 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockSkill });
+
+        await client.createProjectSkill('fdev', skillBody);
+
+        const callBody = axiosInstance.post.mock.calls[0][1] as Record<string, unknown>;
+        expect('spawnLine' in callBody).toBe(false);
+      });
+
+      it('surfaces HAOpsApiError on 409 (name conflict)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 409, data: { error: 'A project skill with this name already exists' } },
+          message: 'Request failed with status code 409',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(client.createProjectSkill('fdev', skillBody)).rejects.toThrow(HAOpsApiError);
+      });
+
+      it('surfaces HAOpsApiError on 404 (feature flag off)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(client.createProjectSkill('fdev', skillBody)).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
+    // ===== P·B·I4: getProtocolSpawnLines =====
+
+    describe('getProtocolSpawnLines', () => {
+      it('GETs /api/projects/[slug]/protocol/spawn-lines with no role filter', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: { architect: 'You are the architect...', dev: 'You are the dev...' } });
+
+        const result = await client.getProtocolSpawnLines('fdev');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith('/api/projects/fdev/protocol/spawn-lines');
+        expect(result).toHaveProperty('architect');
+      });
+
+      it('appends ?role= when role is provided', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: { role: 'dev', spawnLine: 'You are the dev...' } });
+
+        await client.getProtocolSpawnLines('fdev', { role: 'dev' });
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/projects/fdev/protocol/spawn-lines?role=dev',
+        );
+      });
+
+      it('surfaces HAOpsApiError on 404 (feature flag off)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.get.mockRejectedValue(error);
+
+        await expect(client.getProtocolSpawnLines('fdev')).rejects.toThrow(HAOpsApiError);
+      });
+
+      it('returns the raw response object', async () => {
+        const mockData = { architect: 'line1', dev: 'line2', qa: 'line3' };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: mockData });
+
+        const result = await client.getProtocolSpawnLines('myproject');
+
+        expect(result).toEqual(mockData);
+      });
+    });
+
+    // ===== P·B·I3: previewProjectProtocol =====
+
+    describe('previewProjectProtocol', () => {
+      const previewFixture = {
+        preview: true,
+        mode: 'composed-lazy',
+        version: 5,
+        bytes: 1200,
+        skillRefs: [{ name: 'code-review', scope: 'system', version: 1 }],
+        coreContent: '# Dev boot section',
+        warnings: [],
+      };
+
+      it('GETs /api/projects/[slug]/protocol/preview with role param', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: previewFixture });
+
+        const result = await client.previewProjectProtocol('fdev', 'dev');
+
+        const call = (axiosInstance.get.mock.calls[0][0] as string);
+        expect(call).toContain('/api/projects/fdev/protocol/preview');
+        expect(call).toContain('role=dev');
+        expect(result).toEqual(previewFixture);
+      });
+
+      it('includes templateId in query string when provided', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: previewFixture });
+
+        await client.previewProjectProtocol('fdev', 'dev', { templateId: 'tpl-uuid-1' });
+
+        const call = axiosInstance.get.mock.calls[0][0] as string;
+        expect(call).toContain('templateId=tpl-uuid-1');
+      });
+
+      it('JSON-encodes enabledSkillIds and disabledSkillIds', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: previewFixture });
+
+        await client.previewProjectProtocol('fdev', 'dev', {
+          enabledSkillIds: ['uuid-1', 'uuid-2'],
+          disabledSkillIds: ['uuid-3'],
+        });
+
+        const call = axiosInstance.get.mock.calls[0][0] as string;
+        expect(call).toContain('enabledSkillIds=');
+        expect(call).toContain('disabledSkillIds=');
+      });
+
+      it('surfaces HAOpsApiError on 404 (feature flag off)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.get.mockRejectedValue(error);
+
+        await expect(client.previewProjectProtocol('fdev', 'dev')).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
+    // ===== P·B·I2: getSkillHistory + getRoleTemplateHistory =====
+
+    describe('getSkillHistory', () => {
+      const historyFixture = [
+        { version: 1, createdAt: '2026-01-01T00:00:00Z', content: 'v1 body', lifecycleState: 'draft' },
+        { version: 2, createdAt: '2026-02-01T00:00:00Z', content: 'v2 body', lifecycleState: 'published', diff: '@@ -1 +1 @@\n-v1 body\n+v2 body' },
+      ];
+
+      it('GETs /api/skills/[name]/history with no options', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: historyFixture });
+
+        const result = await client.getSkillHistory('code-review');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith('/api/skills/code-review/history');
+        expect(result).toEqual(historyFixture);
+      });
+
+      it('appends ?scope= and ?projectSlug= when provided', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: historyFixture });
+
+        await client.getSkillHistory('my-skill', { scope: 'project', projectSlug: 'fdev' });
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/skills/my-skill/history?scope=project&projectSlug=fdev',
+        );
+      });
+
+      it('appends ?diff=true when diff=true', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: historyFixture });
+
+        await client.getSkillHistory('code-review', { diff: true });
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/skills/code-review/history?diff=true',
+        );
+      });
+
+      it('surfaces HAOpsApiError on 404 (skill not found)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Skill not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.get.mockRejectedValue(error);
+
+        await expect(client.getSkillHistory('nonexistent')).rejects.toThrow(HAOpsApiError);
+      });
+
+      it('URL-encodes skill names with special characters', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: [] });
+
+        await client.getSkillHistory('odd/name');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/skills/odd%2Fname/history',
+        );
+      });
+    });
+
+    describe('getRoleTemplateHistory', () => {
+      const templateHistoryFixture = [
+        { version: 1, createdAt: '2026-01-01T00:00:00Z', baseBody: '# Dev v1', lifecycleState: 'draft', baseRole: 'dev' },
+        { version: 2, createdAt: '2026-03-01T00:00:00Z', baseBody: '# Dev v2', lifecycleState: 'published', baseRole: 'dev', diff: '@@ -1 +1 @@\n-# Dev v1\n+# Dev v2' },
+      ];
+
+      it('GETs /api/role-templates/[name]/history with no options', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: templateHistoryFixture });
+
+        const result = await client.getRoleTemplateHistory('dev');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith('/api/role-templates/dev/history');
+        expect(result).toEqual(templateHistoryFixture);
+      });
+
+      it('appends ?diff=true when diff=true', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: templateHistoryFixture });
+
+        await client.getRoleTemplateHistory('architect', { diff: true });
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/role-templates/architect/history?diff=true',
+        );
+      });
+
+      it('surfaces HAOpsApiError on 404 (template not found)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Role template not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.get.mockRejectedValue(error);
+
+        await expect(client.getRoleTemplateHistory('nonexistent')).rejects.toThrow(HAOpsApiError);
+      });
+
+      it('returns empty array when history is empty', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: [] });
+
+        const result = await client.getRoleTemplateHistory('new-template');
+
+        expect(result).toEqual([]);
+      });
+
+      it('URL-encodes template names with special characters', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.get.mockResolvedValue({ data: [] });
+
+        await client.getRoleTemplateHistory('odd/template');
+
+        expect(axiosInstance.get).toHaveBeenCalledWith(
+          '/api/role-templates/odd%2Ftemplate/history',
+        );
+      });
+    });
+
     describe('updateSkill with cascade flag', () => {
       it('PUT includes ?cascade=true when cascade=true', async () => {
         const mockSkill = { id: 'skill-uuid-1', name: 'code-review', version: 2, scope: 'system' };

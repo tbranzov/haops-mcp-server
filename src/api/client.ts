@@ -1497,6 +1497,146 @@ export class HAOpsApiClient {
    *   - `version`: existing behaviour — when set, returns that historical row
    *     (raw DB shape, predates composed mode; mode/bundle params ignored).
    */
+  /**
+   * POST /api/skills/bulk-publish — atomically publish multiple skills in one
+   * DB transaction.
+   *
+   * The server wraps all version bumps in a single transaction and runs the
+   * cascade (consumer re-wiring across role templates, skill packs, and project
+   * protocols) ONCE at the end — drastically cheaper than N×PUT when updating
+   * many skills simultaneously.
+   *
+   * Body:
+   *   - entries: array of skill specs. Each entry must supply `name` + `scope`
+   *     (and `projectSlug` when scope='project') plus any mutable fields you
+   *     want to change (content, description, category, applicableRoles). A
+   *     no-op entry (no diff vs current) is returned as-is without bumping its
+   *     version — same semantics as single-skill PUT.
+   *   - cascade: when true, re-wires ALL consumers of updated skills to the new
+   *     UUIDs in the same transaction. Default: false.
+   *
+   * Partial-failure semantics: if ANY entry fails validation the server rolls
+   * back the entire transaction and returns 400 with a per-entry error list.
+   * On success (200) the server returns per-entry results (success + new skill
+   * version) plus an optional aggregate cascade report.
+   *
+   * Admin-only, feature-flagged (404 when ENABLE_COMPOSED_PROTOCOLS is off).
+   */
+  async bulkPublishSkills(
+    entries: Array<{
+      name: string;
+      scope: 'system' | 'project';
+      projectSlug?: string;
+      content?: string;
+      description?: string;
+      category?: string;
+      applicableRoles?: string[];
+    }>,
+    opts: {
+      cascade?: boolean;
+    } = {},
+  ): Promise<{
+    results: Array<{
+      name: string;
+      scope: string;
+      success: boolean;
+      version?: number;
+      error?: string;
+      skill?: Record<string, unknown>;
+    }>;
+    cascadeReport?: Record<string, unknown>;
+    totalUpdated: number;
+    totalFailed: number;
+  }> {
+    try {
+      const body: Record<string, unknown> = { entries };
+      if (opts.cascade) body.cascade = true;
+      const response = await this.axios.post<{
+        results: Array<{
+          name: string;
+          scope: string;
+          success: boolean;
+          version?: number;
+          error?: string;
+          skill?: Record<string, unknown>;
+        }>;
+        cascadeReport?: Record<string, unknown>;
+        totalUpdated: number;
+        totalFailed: number;
+      }>('/api/skills/bulk-publish', body);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * POST /api/projects/[slug]/skills — create a project-scoped skill.
+   *
+   * Project-scoped skills are visible only to that project's protocol resolver.
+   * They follow the same kebab-case naming + category rules as system skills,
+   * but do NOT appear in haops_list_skills (system) unless scope='project' +
+   * projectSlug are explicitly passed.
+   *
+   * Returns the new Skill entity (status 201). 409 if a non-deleted project
+   * skill with the same name already exists in this project — use
+   * haops_update_skill(scope='project') to publish a new version instead.
+   *
+   * Admin-only, feature-flagged behind ENABLE_COMPOSED_PROTOCOLS (returns 404
+   * when off — "looks absent" pattern).
+   */
+  async createProjectSkill(
+    projectSlug: string,
+    body: {
+      name: string;
+      description: string;
+      content: string;
+      category: string;
+      applicableRoles: string[];
+      spawnLine?: string;
+    },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/skills`,
+        body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * GET /api/projects/[slug]/protocol/spawn-lines?role=
+   *
+   * Returns the per-role spawn-line text strings — the short boot-ritual lines
+   * injected at agent session start when using composed protocols. When `role`
+   * is omitted, returns spawn lines for ALL configured roles. When specified,
+   * returns only the entry for that role.
+   *
+   * Read-only. Feature-flagged (404 when ENABLE_COMPOSED_PROTOCOLS is off,
+   * same "looks absent" pattern as other composed-mode routes).
+   */
+  async getProtocolSpawnLines(
+    projectSlug: string,
+    opts: {
+      role?: string;
+    } = {},
+  ): Promise<Record<string, unknown>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.role) params.set('role', opts.role);
+      const query = params.toString();
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/protocol/spawn-lines${query ? `?${query}` : ''}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   async readProtocol(
     projectSlug: string,
     role: string,
@@ -1513,6 +1653,57 @@ export class HAOpsApiClient {
       if (version === undefined && mode === 'bundle') query += `&bundle=true`;
       const response = await this.axios.get<Record<string, unknown>>(
         `/api/projects/${projectSlug}/protocol${query}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * GET /api/projects/[slug]/protocol/preview
+   *
+   * Dry-run the composed-protocol resolver. Returns what the assembled protocol
+   * WOULD look like if the given templateId / skillsConfig were applied — without
+   * persisting anything. Equivalent to a read-only PUT simulation.
+   *
+   * Query params mirror the PUT body: role (required), optional templateId,
+   * optional skillsConfig encoded as JSON in the query string. When no options
+   * are given, the preview resolves the CURRENT project settings (useful for a
+   * plain sanity-check).
+   *
+   * Returns the same shape as GET /api/projects/[slug]/protocol: mode, body /
+   * coreContent + skillRefs + warnings. The server adds a `preview: true` flag
+   * so callers can tell the result was not persisted.
+   *
+   * Feature-flagged: the endpoint returns 404 when ENABLE_COMPOSED_PROTOCOLS is
+   * off (same "looks absent" pattern as the other composed-mode routes).
+   */
+  async previewProjectProtocol(
+    projectSlug: string,
+    role: string,
+    opts: {
+      templateId?: string;
+      enabledSkillIds?: string[];
+      disabledSkillIds?: string[];
+      customContent?: string;
+    } = {},
+  ): Promise<Record<string, unknown>> {
+    try {
+      const params = new URLSearchParams();
+      params.set('role', role);
+      if (opts.templateId) params.set('templateId', opts.templateId);
+      if (opts.enabledSkillIds && opts.enabledSkillIds.length > 0) {
+        params.set('enabledSkillIds', JSON.stringify(opts.enabledSkillIds));
+      }
+      if (opts.disabledSkillIds && opts.disabledSkillIds.length > 0) {
+        params.set('disabledSkillIds', JSON.stringify(opts.disabledSkillIds));
+      }
+      if (opts.customContent !== undefined) {
+        params.set('customContent', opts.customContent);
+      }
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/protocol/preview?${params.toString()}`,
       );
       return response.data;
     } catch (error) {
@@ -1827,6 +2018,73 @@ export class HAOpsApiClient {
       const query = params.toString();
       const response = await this.axios.delete<{ message: string; versionCount: number }>(
         `/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  // ===== Skill & Role Template History Methods (P·B·I2) =====
+
+  /**
+   * GET /api/skills/[name]/history?scope=&projectSlug=&diff=
+   *
+   * Returns the full version history of a named skill. Each entry includes the
+   * version number, who published it, when, and the content at that version.
+   * When `diff=true` the server computes unified diffs between consecutive
+   * versions and includes a `diff` field on each entry (empty string for v1
+   * since there is no predecessor).
+   *
+   * 404 from this endpoint means either the skill does not exist, or the name +
+   * scope + projectSlug combo is wrong.
+   */
+  async getSkillHistory(
+    name: string,
+    opts: {
+      scope?: 'system' | 'project';
+      projectSlug?: string;
+      diff?: boolean;
+    } = {},
+  ): Promise<Array<Record<string, unknown>>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.scope) params.set('scope', opts.scope);
+      if (opts.projectSlug) params.set('projectSlug', opts.projectSlug);
+      if (opts.diff) params.set('diff', 'true');
+      const query = params.toString();
+      const response = await this.axios.get<Array<Record<string, unknown>>>(
+        `/api/skills/${encodeURIComponent(name)}/history${query ? `?${query}` : ''}`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
+   * GET /api/role-templates/[name]/history?diff=
+   *
+   * Returns the full version history of a named role template. Role templates
+   * are system-wide (no scope/projectSlug axis). When `diff=true` the server
+   * computes unified diffs between consecutive versions and includes a `diff`
+   * field on each entry.
+   *
+   * 404 means the template name does not exist (or all versions were
+   * soft-deleted — history only shows non-paranoid rows).
+   */
+  async getRoleTemplateHistory(
+    name: string,
+    opts: {
+      diff?: boolean;
+    } = {},
+  ): Promise<Array<Record<string, unknown>>> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.diff) params.set('diff', 'true');
+      const query = params.toString();
+      const response = await this.axios.get<Array<Record<string, unknown>>>(
+        `/api/role-templates/${encodeURIComponent(name)}/history${query ? `?${query}` : ''}`,
       );
       return response.data;
     } catch (error) {
