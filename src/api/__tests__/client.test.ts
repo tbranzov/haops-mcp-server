@@ -1550,6 +1550,89 @@ describe('HAOpsApiClient', () => {
       });
     });
 
+    // ===== P·B·I6: bulkPublishSkills =====
+
+    describe('bulkPublishSkills', () => {
+      const entries = [
+        { name: 'code-review', scope: 'system' as const, content: 'updated review' },
+        { name: 'deploy-check', scope: 'system' as const, content: 'updated deploy' },
+      ];
+
+      const successResponse = {
+        totalUpdated: 2,
+        totalFailed: 0,
+        results: [
+          { name: 'code-review', scope: 'system', success: true, version: 3 },
+          { name: 'deploy-check', scope: 'system', success: true, version: 2 },
+        ],
+      };
+
+      it('POSTs to /api/skills/bulk-publish with entries', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: successResponse });
+
+        const result = await client.bulkPublishSkills(entries);
+
+        expect(axiosInstance.post).toHaveBeenCalledWith(
+          '/api/skills/bulk-publish',
+          { entries },
+        );
+        expect(result.totalUpdated).toBe(2);
+        expect(result.totalFailed).toBe(0);
+      });
+
+      it('includes cascade=true in body when cascade=true', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: successResponse });
+
+        await client.bulkPublishSkills(entries, { cascade: true });
+
+        const callBody = axiosInstance.post.mock.calls[0][1] as Record<string, unknown>;
+        expect(callBody.cascade).toBe(true);
+      });
+
+      it('does NOT include cascade in body when cascade=false', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: successResponse });
+
+        await client.bulkPublishSkills(entries, { cascade: false });
+
+        const callBody = axiosInstance.post.mock.calls[0][1] as Record<string, unknown>;
+        expect(callBody.cascade).toBeUndefined();
+      });
+
+      it('surfaces partial-failure response correctly', async () => {
+        const partialFailResponse = {
+          totalUpdated: 0,
+          totalFailed: 1,
+          results: [
+            { name: 'nonexistent-skill', scope: 'system', success: false, error: 'Skill not found' },
+          ],
+        };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: partialFailResponse });
+
+        const result = await client.bulkPublishSkills([{ name: 'nonexistent-skill', scope: 'system' }]);
+
+        expect(result.totalFailed).toBe(1);
+        expect(result.results[0].success).toBe(false);
+        expect(result.results[0].error).toBe('Skill not found');
+      });
+
+      it('surfaces HAOpsApiError on 404 (feature flag off)', async () => {
+        const axiosInstance = mockCreate.mock.results[0].value;
+        const error = {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Not found' } },
+          message: 'Request failed with status code 404',
+        };
+        (mockedAxios.isAxiosError as unknown as jest.Mock) = jest.fn().mockReturnValue(true);
+        axiosInstance.post.mockRejectedValue(error);
+
+        await expect(client.bulkPublishSkills(entries)).rejects.toThrow(HAOpsApiError);
+      });
+    });
+
     // ===== P·B·I5: createProjectSkill =====
 
     describe('createProjectSkill', () => {

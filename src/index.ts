@@ -2248,6 +2248,68 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
 
+      // ===== Bulk Publish Skills Tool (P·B·I6) =====
+      {
+        name: 'haops_bulk_publish_skills',
+        description:
+          'Atomically publish multiple skills in a single DB transaction (POST /api/skills/bulk-publish). All version bumps happen in one round-trip; when cascade=true, consumer re-wiring (role templates, skill packs, project protocols) runs ONCE at the end — significantly cheaper than N sequential haops_update_skill calls during mass refactors.\n\nPartial-failure semantics: if ANY entry fails validation (unknown skill name, bad scope+projectSlug combo, duplicate entry), the server rolls back the ENTIRE transaction and returns a 400 with a per-entry error list. No skills are published unless ALL entries are valid. Check `totalFailed` in the response — 0 means full success.\n\nAdmin-only, requires ENABLE_COMPOSED_PROTOCOLS=true. Returns 404 when the feature flag is off (the route looks absent by design).\n\nWARNING: cascade=true re-wires ALL consumers of EVERY updated skill in one transaction. Use haops_preview_skill_cascade on high-impact skills before running to estimate blast radius.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            entries: {
+              type: 'array',
+              description: 'List of skills to publish. Each entry must have name + scope. Only supply the fields you want to change; unchanged fields carry forward (no-op entries return the current row without bumping version).',
+              items: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                    description: 'Kebab-case skill name.',
+                  },
+                  scope: {
+                    type: 'string',
+                    enum: ['system', 'project'],
+                    description: 'Scope of the target skill.',
+                  },
+                  projectSlug: {
+                    type: 'string',
+                    description: 'REQUIRED when scope="project"; MUST be omitted when scope="system".',
+                  },
+                  content: {
+                    type: 'string',
+                    description: 'New markdown body.',
+                  },
+                  description: {
+                    type: 'string',
+                    description: 'New one-line description.',
+                  },
+                  category: {
+                    type: 'string',
+                    enum: ['review', 'planning', 'testing', 'deployment', 'communication', 'memory', 'safety', 'resilience', 'git', 'database', 'other'],
+                    description: 'New category.',
+                  },
+                  applicableRoles: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'New applicable roles.',
+                  },
+                },
+                required: ['name', 'scope'],
+              },
+            },
+            cascade: {
+              type: 'boolean',
+              description: 'When true, atomically re-wires ALL consumers of the updated skills (role templates containing them in defaultSkills, skill packs containing their IDs, project protocols with them in enabledSkillIds) to the NEW UUIDs, all in the same transaction. Recommended for mass refactors. Default: false.',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, include full skill JSON for each entry in the result output. Default: false.',
+            },
+          },
+          required: ['entries'],
+        },
+      },
+
       // ===== Project-scope Skill Creation Tool (P·B·I5) =====
       {
         name: 'haops_create_project_skill',
@@ -5964,6 +6026,72 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [{ type: 'text', text: `Error getting role template history: ${message}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // ===== Bulk Publish Skills Handler (P·B·I6) =====
+
+  if (name === 'haops_bulk_publish_skills') {
+    try {
+      const { entries, cascade, verbose } = args as {
+        entries: Array<{
+          name: string;
+          scope: 'system' | 'project';
+          projectSlug?: string;
+          content?: string;
+          description?: string;
+          category?: string;
+          applicableRoles?: string[];
+        }>;
+        cascade?: boolean;
+        verbose?: boolean;
+      };
+
+      const result = await apiClient.bulkPublishSkills(entries, { cascade });
+
+      const lines: string[] = [
+        `Bulk publish: ${result.totalUpdated} updated, ${result.totalFailed} failed (${entries.length} entries total)`,
+        '',
+      ];
+
+      if (result.totalFailed > 0) {
+        lines.push('FAILURES:');
+        for (const r of result.results) {
+          if (!r.success) {
+            lines.push(`  FAIL  ${r.name} (${r.scope}): ${r.error ?? 'unknown error'}`);
+          }
+        }
+        lines.push('');
+        lines.push('NOTE: entire transaction was rolled back — no skills were published.');
+        lines.push('');
+      }
+
+      lines.push('Results per entry:');
+      for (const r of result.results) {
+        const status = r.success ? 'OK  ' : 'FAIL';
+        const ver = r.version !== undefined ? ` → v${r.version}` : '';
+        const err = !r.success && r.error ? ` (${r.error})` : '';
+        lines.push(`  ${status}  ${r.name} (${r.scope})${ver}${err}`);
+        if (verbose && r.skill) {
+          lines.push(`        ${JSON.stringify(r.skill)}`);
+        }
+      }
+
+      if (result.cascadeReport) {
+        lines.push('');
+        lines.push('Cascade report:');
+        lines.push(JSON.stringify(result.cascadeReport, null, 2).replace(/^/gm, '  '));
+      }
+
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+        isError: result.totalFailed > 0,
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: formatSkillMutationError(error, 'bulk publishing skills') }],
         isError: true,
       };
     }

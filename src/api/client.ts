@@ -1498,6 +1498,79 @@ export class HAOpsApiClient {
    *     (raw DB shape, predates composed mode; mode/bundle params ignored).
    */
   /**
+   * POST /api/skills/bulk-publish — atomically publish multiple skills in one
+   * DB transaction.
+   *
+   * The server wraps all version bumps in a single transaction and runs the
+   * cascade (consumer re-wiring across role templates, skill packs, and project
+   * protocols) ONCE at the end — drastically cheaper than N×PUT when updating
+   * many skills simultaneously.
+   *
+   * Body:
+   *   - entries: array of skill specs. Each entry must supply `name` + `scope`
+   *     (and `projectSlug` when scope='project') plus any mutable fields you
+   *     want to change (content, description, category, applicableRoles). A
+   *     no-op entry (no diff vs current) is returned as-is without bumping its
+   *     version — same semantics as single-skill PUT.
+   *   - cascade: when true, re-wires ALL consumers of updated skills to the new
+   *     UUIDs in the same transaction. Default: false.
+   *
+   * Partial-failure semantics: if ANY entry fails validation the server rolls
+   * back the entire transaction and returns 400 with a per-entry error list.
+   * On success (200) the server returns per-entry results (success + new skill
+   * version) plus an optional aggregate cascade report.
+   *
+   * Admin-only, feature-flagged (404 when ENABLE_COMPOSED_PROTOCOLS is off).
+   */
+  async bulkPublishSkills(
+    entries: Array<{
+      name: string;
+      scope: 'system' | 'project';
+      projectSlug?: string;
+      content?: string;
+      description?: string;
+      category?: string;
+      applicableRoles?: string[];
+    }>,
+    opts: {
+      cascade?: boolean;
+    } = {},
+  ): Promise<{
+    results: Array<{
+      name: string;
+      scope: string;
+      success: boolean;
+      version?: number;
+      error?: string;
+      skill?: Record<string, unknown>;
+    }>;
+    cascadeReport?: Record<string, unknown>;
+    totalUpdated: number;
+    totalFailed: number;
+  }> {
+    try {
+      const body: Record<string, unknown> = { entries };
+      if (opts.cascade) body.cascade = true;
+      const response = await this.axios.post<{
+        results: Array<{
+          name: string;
+          scope: string;
+          success: boolean;
+          version?: number;
+          error?: string;
+          skill?: Record<string, unknown>;
+        }>;
+        cascadeReport?: Record<string, unknown>;
+        totalUpdated: number;
+        totalFailed: number;
+      }>('/api/skills/bulk-publish', body);
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  /**
    * POST /api/projects/[slug]/skills — create a project-scoped skill.
    *
    * Project-scoped skills are visible only to that project's protocol resolver.
