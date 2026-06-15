@@ -1669,6 +1669,17 @@ describe('HAOpsApiClient', () => {
         expect(callBody.spawnLine).toBe('Custom spawn line');
       });
 
+      it('omits spawnLine from body when not provided', async () => {
+        const mockSkill = { id: 'skill-uuid-3', name: 'project-specific-review', scope: 'project', version: 1 };
+        const axiosInstance = mockCreate.mock.results[0].value;
+        axiosInstance.post.mockResolvedValue({ data: mockSkill });
+
+        await client.createProjectSkill('fdev', skillBody);
+
+        const callBody = axiosInstance.post.mock.calls[0][1] as Record<string, unknown>;
+        expect('spawnLine' in callBody).toBe(false);
+      });
+
       it('surfaces HAOpsApiError on 409 (name conflict)', async () => {
         const axiosInstance = mockCreate.mock.results[0].value;
         const error = {

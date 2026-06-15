@@ -6121,15 +6121,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         verbose?: boolean;
       };
 
-      const body: Record<string, unknown> = {
-        name: skillName,
-        description,
-        content,
-        category,
-        applicableRoles,
-      };
-      if (spawnLine !== undefined) body.spawnLine = spawnLine;
-
       const skill = await apiClient.createProjectSkill(projectSlug, {
         name: skillName,
         description,
