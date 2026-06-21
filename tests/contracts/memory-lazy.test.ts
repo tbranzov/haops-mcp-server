@@ -7,7 +7,9 @@
  * apiClient injected via module-level replacement.
  *
  * Contracts verified:
- *   1. Lazy envelope contains doc-tree HEADERS but NO section body text
+ *   1. Lazy envelope contains COMPACT doc artifact pointer (title [slug] · N sections)
+ *      but NO per-section headers or bodies — eliminates the section-fetch that made
+ *      lazy 4% BIGGER than eager at steady state (ADR-027 I6 refinement).
  *   2. Active-work section is filtered to in-progress only
  *   3. Log section contains HEADERS only (timestamp·tag·author) — no body content
  *   4. Consolidation banner fires when pendingEntries > threshold
@@ -49,41 +51,20 @@ function makeMemory(pendingCount: number, baseText = 'Base knowledge text'): Age
   };
 }
 
-const ARCH_SECTIONS = [
-  {
-    id: 'sec-1', title: 'Overview', slug: 'overview', sortOrder: 1, parentId: null,
-    content: 'Full body: this is the overview content that should NOT appear in lazy mode',
-    children: [
-      {
-        id: 'sec-1a', title: 'Tech Stack', slug: 'tech-stack', sortOrder: 1, parentId: 'sec-1',
-        content: 'Full body: tech stack details — should NOT appear',
-        children: [],
-      },
-    ],
-  },
-  {
-    id: 'sec-2', title: 'Data Model', slug: 'data-model', sortOrder: 2, parentId: null,
-    content: 'Full body: data model details — should NOT appear',
-    children: [],
-  },
-];
-
-const ADR_SECTIONS = [
-  {
-    id: 'adr-1', title: 'ADR-001 Use PostgreSQL', slug: 'adr-001', sortOrder: 1, parentId: null,
-    content: 'Full ADR body — should NOT appear in lazy mode',
-    children: [],
-  },
-  {
-    id: 'adr-2', title: 'ADR-027 Memory lazy index', slug: 'adr-027', sortOrder: 2, parentId: null,
-    content: 'Full ADR body — should NOT appear in lazy mode',
-    children: [],
-  },
-];
+// NOTE: ARCH_SECTIONS and ADR_SECTIONS are no longer used in the lazy path.
+// The compact pointer mode (ADR-027 I6 refinement) fetches only /docs (artifact list),
+// not individual section lists. Kept as comments for reference.
+//
+// ARCH_SECTIONS: [{ id:'sec-1', title:'Overview', slug:'overview', parentId:null,
+//   content:'Full body: this is the overview content...', children:[{ title:'Tech Stack', ... }] },
+//   { id:'sec-2', title:'Data Model', slug:'data-model', parentId:null, ... }]
+// ADR_SECTIONS: [{ id:'adr-1', title:'ADR-001 Use PostgreSQL', slug:'adr-001', ... },
+//   { id:'adr-2', title:'ADR-027 Memory lazy index', slug:'adr-027', ... }]
 
 const DOC_ARTIFACTS = [
-  { id: 'art-1', slug: 'architecture', title: 'Architecture', type: 'architecture' },
-  { id: 'art-2', slug: 'adr', title: 'ADR', type: 'adr' },
+  { id: 'art-1', slug: 'architecture', title: 'HAOps System Architecture', type: 'architecture', sectionCount: 88 },
+  { id: 'art-2', slug: 'adr', title: 'Architecture Decision Records', type: 'adr', sectionCount: 46 },
+  { id: 'art-3', slug: 'api', title: 'HAOps API Reference', type: 'api', sectionCount: 11 },
 ];
 
 const IN_PROGRESS_MODULES = [
@@ -108,8 +89,8 @@ function makeMockApiClient(memoryFixture: AgentMemory): MockApiClient {
     readMemory: jest.fn().mockResolvedValue(memoryFixture),
     request: jest.fn().mockImplementation((_method: string, url: string) => {
       if (url.endsWith('/docs')) return Promise.resolve(DOC_ARTIFACTS);
-      if (url.includes('/docs/architecture/sections')) return Promise.resolve(ARCH_SECTIONS);
-      if (url.includes('/docs/adr/sections')) return Promise.resolve(ADR_SECTIONS);
+      // Compact pointer mode: no section endpoints are called in lazy mode.
+      // If a test mistakenly triggers a section fetch, return empty to surface the bug.
       return Promise.resolve([]);
     }),
     listModules: jest.fn().mockResolvedValue(IN_PROGRESS_MODULES),
@@ -169,72 +150,22 @@ async function invokeReadMemory(
       lines.push(consolidationBanner, '');
     }
 
-    type SectionNode = {
-      id: string; title: string; slug: string; sortOrder: number;
-      parentId?: string | null; children?: SectionNode[];
-    };
-    function flattenHeaders(nodes: SectionNode[], depth = 0): string[] {
-      const result: string[] = [];
-      for (const node of nodes) {
-        const indent = '  '.repeat(depth);
-        result.push(`${indent}${node.title} [${node.slug}]`);
-        if (node.children && node.children.length > 0) {
-          result.push(...flattenHeaders(node.children, depth + 1));
-        }
-      }
-      return result;
-    }
-
+    // Compact pointer — counts only, no section fetch (ADR-027 I6 refinement)
     try {
       const artifacts = await apiClient.request('GET', `/api/projects/${projectSlug}/docs`) as Array<{
-        id: string; slug: string; title: string; type?: string;
+        id: string; slug: string; title: string; type?: string; sectionCount?: number | string;
       }>;
 
-      const archArtifact = Array.isArray(artifacts) && artifacts.find(
-        a => a.slug === 'architecture' || a.title?.toLowerCase().includes('architecture')
-      );
-      const adrArtifact = Array.isArray(artifacts) && artifacts.find(
-        a => a.slug === 'adr' || a.title?.toLowerCase() === 'adr'
-          || a.title?.toLowerCase().includes('architecture decision')
-      );
-
-      if (archArtifact) {
-        lines.push('## Architecture doc tree');
-        lines.push(`(artifact: ${archArtifact.slug} — use haops_get_doc_section to read a section body)`);
-        try {
-          const sections = await apiClient.request(
-            'GET', `/api/projects/${projectSlug}/docs/${archArtifact.slug}/sections`
-          ) as SectionNode[];
-          const headers = flattenHeaders(Array.isArray(sections) ? sections : []);
-          if (headers.length > 0) {
-            lines.push(...headers);
-          } else {
-            lines.push('(no sections)');
-          }
-        } catch {
-          lines.push('(error fetching architecture sections)');
+      lines.push('## Doc artifacts');
+      if (Array.isArray(artifacts) && artifacts.length > 0) {
+        for (const a of artifacts) {
+          const count = a.sectionCount != null ? ` · ${a.sectionCount} sections` : '';
+          lines.push(`- ${a.title} [${a.slug}]${count}`);
         }
-        lines.push('');
+      } else {
+        lines.push('(none)');
       }
-
-      if (adrArtifact) {
-        lines.push('## ADR index');
-        lines.push(`(artifact: ${adrArtifact.slug} — use haops_get_doc_section to read a section body)`);
-        try {
-          const sections = await apiClient.request(
-            'GET', `/api/projects/${projectSlug}/docs/${adrArtifact.slug}/sections`
-          ) as SectionNode[];
-          const headers = flattenHeaders(Array.isArray(sections) ? sections : []);
-          if (headers.length > 0) {
-            lines.push(...headers);
-          } else {
-            lines.push('(no sections)');
-          }
-        } catch {
-          lines.push('(error fetching ADR sections)');
-        }
-        lines.push('');
-      }
+      lines.push('(browse: haops_list_doc_sections(projectSlug, artifactSlug) · search: haops_rag_query)', '');
     } catch {
       lines.push('## Doc artifacts', '(unavailable — HAOps docs API error)', '');
     }
@@ -317,46 +248,58 @@ async function invokeReadMemory(
 describe('haops_read_memory — lazy mode (ADR-027 I6)', () => {
   const BASE_ARGS = { projectSlug: 'fdev', entityType: 'project' as const, entityId: 'self' };
 
-  // ── Contract 1: doc tree headers, no section bodies ──────────────────────
-  describe('lazy envelope doc tree', () => {
-    it('contains section title and slug headers but NOT section body content', async () => {
+  // ── Contract 1: compact doc artifact pointer, no section headers/bodies ────
+  // ADR-027 I6 refinement: section-header dump was making lazy 4% BIGGER than
+  // eager at steady state (fdev: 20 750 B lazy vs 15 275 B eager before fix).
+  // Replaced with a counts pointer — one line per artifact, no section fetch.
+  describe('lazy envelope doc artifact pointer', () => {
+    it('contains compact artifact pointer lines with section counts', async () => {
       const memory = makeMemory(3);
       const client = makeMockApiClient(memory);
       const output = await invokeReadMemory({ ...BASE_ARGS, mode: 'lazy' }, client);
 
-      // Headers present
-      expect(output).toContain('Overview [overview]');
-      expect(output).toContain('Tech Stack [tech-stack]');
-      expect(output).toContain('Data Model [data-model]');
-      expect(output).toContain('ADR-001 Use PostgreSQL [adr-001]');
-      expect(output).toContain('ADR-027 Memory lazy index [adr-027]');
+      // Compact pointer lines must appear
+      expect(output).toContain('- HAOps System Architecture [architecture] · 88 sections');
+      expect(output).toContain('- Architecture Decision Records [adr] · 46 sections');
+      expect(output).toContain('- HAOps API Reference [api] · 11 sections');
 
-      // Section bodies must NOT appear
+      // Drill-in instruction must appear
+      expect(output).toContain('haops_list_doc_sections');
+      expect(output).toContain('haops_rag_query');
+    });
+
+    it('does NOT contain any per-section title or slug headers', async () => {
+      const memory = makeMemory(3);
+      const client = makeMockApiClient(memory);
+      const output = await invokeReadMemory({ ...BASE_ARGS, mode: 'lazy' }, client);
+
+      // Section headers from ARCH_SECTIONS / ADR_SECTIONS must NOT appear
+      expect(output).not.toContain('Overview [overview]');
+      expect(output).not.toContain('Tech Stack [tech-stack]');
+      expect(output).not.toContain('Data Model [data-model]');
+      expect(output).not.toContain('ADR-001 Use PostgreSQL [adr-001]');
+      expect(output).not.toContain('ADR-027 Memory lazy index [adr-027]');
+    });
+
+    it('does NOT contain section body content', async () => {
+      const memory = makeMemory(3);
+      const client = makeMockApiClient(memory);
+      const output = await invokeReadMemory({ ...BASE_ARGS, mode: 'lazy' }, client);
+
       expect(output).not.toContain('Full body: this is the overview content');
       expect(output).not.toContain('Full body: tech stack details');
       expect(output).not.toContain('Full body: data model details');
       expect(output).not.toContain('Full ADR body');
     });
 
-    it('nested sections are indented by depth', async () => {
+    it('does NOT call section-level API endpoints', async () => {
       const memory = makeMemory(2);
       const client = makeMockApiClient(memory);
-      const output = await invokeReadMemory({ ...BASE_ARGS, mode: 'lazy' }, client);
+      await invokeReadMemory({ ...BASE_ARGS, mode: 'lazy' }, client);
 
-      // Top-level: no indent prefix before title
-      expect(output).toContain('Overview [overview]');
-      // Nested: two spaces indent
-      expect(output).toContain('  Tech Stack [tech-stack]');
-    });
-
-    it('includes artifact slug reference for on-demand fetch', async () => {
-      const memory = makeMemory(2);
-      const client = makeMockApiClient(memory);
-      const output = await invokeReadMemory({ ...BASE_ARGS, mode: 'lazy' }, client);
-
-      expect(output).toContain('artifact: architecture');
-      expect(output).toContain('artifact: adr');
-      expect(output).toContain('haops_get_doc_section');
+      // Only the /docs list endpoint is called — no /docs/:slug/sections calls
+      const requestCalls = client.request.mock.calls.map((c: [string, string]) => c[1]);
+      expect(requestCalls.every((url: string) => url.endsWith('/docs'))).toBe(true);
     });
   });
 

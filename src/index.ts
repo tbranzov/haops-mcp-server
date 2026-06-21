@@ -5377,85 +5377,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lines.push(consolidationBanner, '');
         }
 
-        // ── Architecture doc tree + ADR index (headers only) ───────────────────
-        // Fetch doc artifacts list, discover architecture + adr artifact slugs,
-        // then fetch their sections and project to headers only (MCP-side).
+        // ── Doc artifacts compact pointer (ADR-027 I6 — counts only, no section fetch) ──
+        // One line per artifact: title [slug] · N sections
+        // Eliminates section header dumps that inflated lazy > eager at steady state.
+        // Agents drill in via haops_list_doc_sections / haops_get_doc_section / haops_rag_query.
         try {
           const artifacts = await apiClient.request('GET', `/api/projects/${projectSlug}/docs`) as Array<{
-            id: string; slug: string; title: string; type?: string;
+            id: string; slug: string; title: string; type?: string; sectionCount?: number | string;
           }>;
 
-          // Find architecture and adr artifacts by slug/title heuristic
-          const archArtifact = Array.isArray(artifacts) && artifacts.find(
-            a => a.slug === 'architecture' || a.title?.toLowerCase().includes('architecture')
-          );
-          const adrArtifact = Array.isArray(artifacts) && artifacts.find(
-            a => a.slug === 'adr' || a.title?.toLowerCase() === 'adr'
-              || a.title?.toLowerCase().includes('architecture decision')
-          );
-
-          // Helper: flatten tree → header lines {title, slug, parentId, sortOrder}
-          type SectionNode = {
-            id: string; title: string; slug: string; sortOrder: number;
-            parentId?: string | null; children?: SectionNode[];
-          };
-          function flattenHeaders(nodes: SectionNode[], depth = 0): string[] {
-            const result: string[] = [];
-            for (const node of nodes) {
-              const indent = '  '.repeat(depth);
-              result.push(`${indent}${node.title} [${node.slug}]`);
-              if (node.children && node.children.length > 0) {
-                result.push(...flattenHeaders(node.children, depth + 1));
-              }
-            }
-            return result;
-          }
-
-          if (archArtifact) {
-            lines.push('## Architecture doc tree');
-            lines.push(`(artifact: ${archArtifact.slug} — use haops_get_doc_section to read a section body)`);
-            try {
-              const sections = await apiClient.request(
-                'GET', `/api/projects/${projectSlug}/docs/${archArtifact.slug}/sections`
-              ) as SectionNode[];
-              const headers = flattenHeaders(Array.isArray(sections) ? sections : []);
-              if (headers.length > 0) {
-                lines.push(...headers);
-              } else {
-                lines.push('(no sections)');
-              }
-            } catch {
-              lines.push('(error fetching architecture sections)');
-            }
-            lines.push('');
-          }
-
-          if (adrArtifact) {
-            lines.push('## ADR index');
-            lines.push(`(artifact: ${adrArtifact.slug} — use haops_get_doc_section to read a section body)`);
-            try {
-              const sections = await apiClient.request(
-                'GET', `/api/projects/${projectSlug}/docs/${adrArtifact.slug}/sections`
-              ) as SectionNode[];
-              const headers = flattenHeaders(Array.isArray(sections) ? sections : []);
-              if (headers.length > 0) {
-                lines.push(...headers);
-              } else {
-                lines.push('(no sections)');
-              }
-            } catch {
-              lines.push('(error fetching ADR sections)');
-            }
-            lines.push('');
-          }
-
-          if (!archArtifact && !adrArtifact && Array.isArray(artifacts)) {
-            lines.push('## Doc artifacts');
+          lines.push('## Doc artifacts');
+          if (Array.isArray(artifacts) && artifacts.length > 0) {
             for (const a of artifacts) {
-              lines.push(`- ${a.title} [${a.slug}]`);
+              const count = a.sectionCount != null ? ` · ${a.sectionCount} sections` : '';
+              lines.push(`- ${a.title} [${a.slug}]${count}`);
             }
-            lines.push('');
+          } else {
+            lines.push('(none)');
           }
+          lines.push('(browse: haops_list_doc_sections(projectSlug, artifactSlug) · search: haops_rag_query)', '');
         } catch {
           lines.push('## Doc artifacts', '(unavailable — HAOps docs API error)', '');
         }
