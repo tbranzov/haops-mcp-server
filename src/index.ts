@@ -1763,7 +1763,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // Agent Memory tools
       {
         name: 'haops_read_memory',
-        description: 'Read agent memory for a project, module, or feature. Returns baseText (consolidated knowledge) and pending log entries. Use full=true to include integrated (historical) log entries.',
+        description: [
+          'Read agent memory for a project, module, or feature.',
+          '',
+          'mode="eager" (default): Returns baseText + full log entry bodies. Full project context in one call.',
+          'mode="lazy" (ADR-027): For entityType=project — returns a compact INDEX envelope:',
+          '  • baseText (already thin)',
+          '  • Architecture doc tree (headers only: title [artifactSlug/sectionSlug])',
+          '  • ADR index (headers only)',
+          '  • Active work — in-progress modules + features',
+          '  • Log headers only (timestamp · tag · author) — NO bodies',
+          '  Agent then fetches detail on demand via haops_get_doc_section / haops_read_memory(full:true) / haops_rag_query.',
+          '  For entityType=module/feature in lazy mode: falls back to eager (entity baseText is already thin).',
+          '',
+          'Use full=true (eager mode only) to include integrated (historical) log entries.',
+          'Lazy default can be enabled via HAOPS_MEMORY_LAZY_DEFAULT=true env var on the MCP server.',
+        ].join('\n'),
         inputSchema: {
           type: 'object',
           properties: {
@@ -1782,7 +1797,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             full: {
               type: 'boolean',
-              description: 'If true, include all log entries (including integrated ones). Default: false (only pending entries)',
+              description: 'If true, include all log entries (including integrated ones). Default: false (only pending entries). Applies to eager mode only.',
+            },
+            mode: {
+              type: 'string',
+              enum: ['eager', 'lazy'],
+              description: 'eager (default): full memory dump. lazy (ADR-027): index envelope — baseText + doc headers + active work + log headers only. Reduces boot context by ~80%. Default is eager unless HAOPS_MEMORY_LAZY_DEFAULT=true is set on the MCP server.',
             },
           },
           required: ['projectSlug', 'entityType', 'entityId'],
@@ -5322,17 +5342,188 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         full?: boolean;
       };
 
+      // Determine effective mode (ADR-027 I6):
+      // Caller can pass mode:"lazy" explicitly; or set HAOPS_MEMORY_LAZY_DEFAULT=true
+      // on the MCP server to flip the default. Eager is the default otherwise.
+      const { mode: modeArg } = args as { mode?: 'eager' | 'lazy' };
+      const lazyDefault = process.env.HAOPS_MEMORY_LAZY_DEFAULT === 'true';
+      const effectiveMode: 'eager' | 'lazy' = modeArg ?? (lazyDefault ? 'lazy' : 'eager');
+
+      const CONSOLIDATE_THRESHOLD = parseInt(process.env.HAOPS_MEMORY_CONSOLIDATE_THRESHOLD ?? '15', 10);
+
       const memory = await apiClient.readMemory(projectSlug, entityType, entityId, full);
 
       const pendingEntries = memory.log.filter(e => !e.integrated);
+
+      // Soft-gate consolidation banner (both modes) — fires when pending log count exceeds threshold.
+      const consolidationBanner =
+        pendingEntries.length > CONSOLIDATE_THRESHOLD
+          ? `⚠️ ${pendingEntries.length} pending log entries — consolidation overdue`
+          : null;
+
+      // ── Lazy mode: project entity only (ADR-027 §2) ──────────────────────────
+      // For module/feature, lazy falls back to eager — entity baseText is already
+      // thin and there are no doc artifacts to index at that level.
+      if (effectiveMode === 'lazy' && entityType === 'project') {
+        const lines: string[] = [
+          `Agent memory INDEX for ${entityType} ${entityId} (lazy mode — ADR-027):`,
+          '',
+          '## Base Text',
+          memory.baseText || '(empty)',
+          '',
+        ];
+
+        if (consolidationBanner) {
+          lines.push(consolidationBanner, '');
+        }
+
+        // ── Architecture doc tree + ADR index (headers only) ───────────────────
+        // Fetch doc artifacts list, discover architecture + adr artifact slugs,
+        // then fetch their sections and project to headers only (MCP-side).
+        try {
+          const artifacts = await apiClient.request('GET', `/api/projects/${projectSlug}/docs`) as Array<{
+            id: string; slug: string; title: string; type?: string;
+          }>;
+
+          // Find architecture and adr artifacts by slug/title heuristic
+          const archArtifact = Array.isArray(artifacts) && artifacts.find(
+            a => a.slug === 'architecture' || a.title?.toLowerCase().includes('architecture')
+          );
+          const adrArtifact = Array.isArray(artifacts) && artifacts.find(
+            a => a.slug === 'adr' || a.title?.toLowerCase() === 'adr'
+              || a.title?.toLowerCase().includes('architecture decision')
+          );
+
+          // Helper: flatten tree → header lines {title, slug, parentId, sortOrder}
+          type SectionNode = {
+            id: string; title: string; slug: string; sortOrder: number;
+            parentId?: string | null; children?: SectionNode[];
+          };
+          function flattenHeaders(nodes: SectionNode[], depth = 0): string[] {
+            const result: string[] = [];
+            for (const node of nodes) {
+              const indent = '  '.repeat(depth);
+              result.push(`${indent}${node.title} [${node.slug}]`);
+              if (node.children && node.children.length > 0) {
+                result.push(...flattenHeaders(node.children, depth + 1));
+              }
+            }
+            return result;
+          }
+
+          if (archArtifact) {
+            lines.push('## Architecture doc tree');
+            lines.push(`(artifact: ${archArtifact.slug} — use haops_get_doc_section to read a section body)`);
+            try {
+              const sections = await apiClient.request(
+                'GET', `/api/projects/${projectSlug}/docs/${archArtifact.slug}/sections`
+              ) as SectionNode[];
+              const headers = flattenHeaders(Array.isArray(sections) ? sections : []);
+              if (headers.length > 0) {
+                lines.push(...headers);
+              } else {
+                lines.push('(no sections)');
+              }
+            } catch {
+              lines.push('(error fetching architecture sections)');
+            }
+            lines.push('');
+          }
+
+          if (adrArtifact) {
+            lines.push('## ADR index');
+            lines.push(`(artifact: ${adrArtifact.slug} — use haops_get_doc_section to read a section body)`);
+            try {
+              const sections = await apiClient.request(
+                'GET', `/api/projects/${projectSlug}/docs/${adrArtifact.slug}/sections`
+              ) as SectionNode[];
+              const headers = flattenHeaders(Array.isArray(sections) ? sections : []);
+              if (headers.length > 0) {
+                lines.push(...headers);
+              } else {
+                lines.push('(no sections)');
+              }
+            } catch {
+              lines.push('(error fetching ADR sections)');
+            }
+            lines.push('');
+          }
+
+          if (!archArtifact && !adrArtifact && Array.isArray(artifacts)) {
+            lines.push('## Doc artifacts');
+            for (const a of artifacts) {
+              lines.push(`- ${a.title} [${a.slug}]`);
+            }
+            lines.push('');
+          }
+        } catch {
+          lines.push('## Doc artifacts', '(unavailable — HAOps docs API error)', '');
+        }
+
+        // ── Active work: in-progress modules + features ────────────────────────
+        lines.push('## Active work (status=in-progress)');
+        try {
+          const [inProgressModules, inProgressFeatures] = await Promise.all([
+            apiClient.listModules(projectSlug, { status: 'in-progress' }),
+            apiClient.listFeatures(projectSlug, { status: 'in-progress' }),
+          ]);
+
+          if (inProgressModules.length === 0 && inProgressFeatures.length === 0) {
+            lines.push('(none currently in progress)');
+          }
+          if (inProgressModules.length > 0) {
+            lines.push('Modules:');
+            for (const m of inProgressModules) {
+              lines.push(`  ${m.title} [${m.id}]`);
+            }
+          }
+          if (inProgressFeatures.length > 0) {
+            lines.push('Features:');
+            for (const f of inProgressFeatures) {
+              lines.push(`  ${f.title} [${f.id}]`);
+            }
+          }
+        } catch {
+          lines.push('(unavailable — active work fetch error)');
+        }
+        lines.push('');
+
+        // ── Log headers only (no bodies) ───────────────────────────────────────
+        lines.push(`## Unconsolidated log headers (${pendingEntries.length})`);
+        lines.push('(headers only — fetch body via haops_read_memory(full:true) for a specific entity)');
+        for (const entry of pendingEntries) {
+          lines.push(`- [${entry.timestamp}] [${entry.tag}] by ${entry.author}`);
+        }
+        if (memory.meta.lastConsolidated) {
+          lines.push('', `Last consolidated: ${memory.meta.lastConsolidated} by ${memory.meta.consolidatedBy}`);
+        }
+        lines.push('');
+        lines.push(
+          '─── Fetch detail on demand ───────────────────────────────────────────────────',
+          '• Doc section body:  haops_get_doc_section(projectSlug, artifactSlug, sectionSlug)',
+          '• Full memory+logs:  haops_read_memory(entityType, entityId, full:true)',
+          '• Semantic search:   haops_rag_query(projectSlug, query)',
+        );
+
+        return {
+          content: [{ type: 'text', text: lines.join('\n') }],
+        };
+      }
+
+      // ── Eager mode (default) ──────────────────────────────────────────────────
       const lines = [
         `Agent memory for ${entityType} ${entityId}:`,
         '',
         '## Base Text',
         memory.baseText || '(empty)',
         '',
-        `## Log Entries (${full ? 'all' : 'pending only'}: ${full ? memory.log.length : pendingEntries.length})`,
       ];
+
+      if (consolidationBanner) {
+        lines.push(consolidationBanner, '');
+      }
+
+      lines.push(`## Log Entries (${full ? 'all' : 'pending only'}: ${full ? memory.log.length : pendingEntries.length})`);
 
       const entries = full ? memory.log : pendingEntries;
       for (const entry of entries) {
