@@ -3882,6 +3882,65 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['projectSlug', 'text'],
         },
       },
+      {
+        name: 'haops_discover',
+        description: [
+          'Metadata-index discovery (ADR-029 P2b): find which doc sections cover a topic BEFORE reading full bodies.',
+          '',
+          'PRIMARY USAGE — filter by scope then pinpoint:',
+          '  1. relevantTo (controlled vocab) — SCOPE filter: narrows to sections tagged for your role/task.',
+          '     Roles:      architect | dev | qa | devops',
+          '     Task-types: rag | helpdesk | auth | mobile | git | testing | memory | deploy |',
+          '                 docs | notifications | livekit | email | distribution | communication',
+          '     Pass one or several values; sections matching ANY value are returned.',
+          '  2. q (free text, case-insensitive, forgiving) — PINPOINT filter: searched over title + summary.',
+          '     Combine with relevantTo for best results.',
+          '',
+          'SECONDARY USAGE — exact tag match (brittle, prefer relevantTo):',
+          '  covers — exact agentMetadata.covers tag match (e.g. "auth-and-roles"). Fails silently if tag',
+          '           is misspelled or not yet indexed. Use only when you know the exact tag.',
+          '',
+          'RETURNS thin rows per matching doc section:',
+          '  { entityType, entityId, title, summary, covers, relevantTo, sectionStatus, stale }',
+          'Feed entityId into haops_get_doc_section to retrieve the full body.',
+          '',
+          'Example — find RAG-related docs scoped to dev role:',
+          '  { projectSlug: "fdev", relevantTo: ["rag", "dev"], q: "metadata index" }',
+        ].join('\n'),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'The project slug (URL identifier)',
+            },
+            relevantTo: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Scope filter — controlled vocab: roles (architect/dev/qa/devops) + task-types (rag/helpdesk/auth/mobile/git/testing/memory/deploy/docs/notifications/livekit/email/distribution/communication). Sections matching ANY value are returned.',
+            },
+            q: {
+              type: 'string',
+              description: 'Free-text search over title + summary (case-insensitive, max 512 chars). Combine with relevantTo for precision.',
+            },
+            covers: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Exact agentMetadata.covers tag filter (brittle — fails silently if tag is wrong). Use relevantTo + q instead when possible.',
+            },
+            entityTypes: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Entity types to search. Default: ["doc_section"]. Reserved for future extension.',
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximum results to return (1–200, default 25).',
+            },
+          },
+          required: ['projectSlug'],
+        },
+      },
     ],
   };
 });
@@ -8609,6 +8668,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error querying RAG: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_discover') {
+    try {
+      const { projectSlug, relevantTo, q, covers, entityTypes, limit } = args as {
+        projectSlug: string;
+        relevantTo?: string[];
+        q?: string;
+        covers?: string[];
+        entityTypes?: string[];
+        limit?: number;
+      };
+
+      // Build URL with repeated query params for arrays (e.g. relevantTo=a&relevantTo=b).
+      // The /discover endpoint is a GET — params go in the URL, not the request body.
+      const qs = new URLSearchParams();
+      if (relevantTo && relevantTo.length > 0) {
+        relevantTo.forEach((v) => qs.append('relevantTo', v));
+      }
+      if (covers && covers.length > 0) {
+        covers.forEach((v) => qs.append('covers', v));
+      }
+      if (entityTypes && entityTypes.length > 0) {
+        entityTypes.forEach((v) => qs.append('entityTypes', v));
+      }
+      if (q) qs.set('q', q);
+      if (limit !== undefined) qs.set('limit', String(limit));
+
+      const queryString = qs.toString();
+      const url = `/api/projects/${projectSlug}/discover${queryString ? `?${queryString}` : ''}`;
+      const result = await apiClient.request('GET', url);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error calling discover: ${message}` }], isError: true };
     }
   }
 
