@@ -96,6 +96,28 @@ export class HAOpsApiClient {
       },
       timeout: 10000,
     });
+
+    // Guard every outgoing request against a path segment that is the literal
+    // string "undefined" or "null". This happens when a tool arg (e.g. an
+    // entity id) is omitted/typo'd/undefined and gets stringified straight
+    // into the URL — `/merge-requests/undefined` — which would otherwise reach
+    // the API and surface as a confusing Postgres 22P02 (invalid uuid). One
+    // choke point covers every tool, present and future, with no risk of
+    // over-blocking legitimate slugs/names/UUIDs (none equal "undefined").
+    this.axios.interceptors.request.use((config) => {
+      const rawPath = (config.url ?? '').split('?')[0];
+      const badSegment = rawPath
+        .split('/')
+        .find((seg) => seg === 'undefined' || seg === 'null');
+      if (badSegment) {
+        throw new HAOpsApiError(
+          `Refusing request: URL path contains the literal "${badSegment}" ` +
+            `(a required id argument was undefined/null). Path: ${rawPath}`,
+          400,
+        );
+      }
+      return config;
+    });
   }
 
   private handleError(error: unknown): never {

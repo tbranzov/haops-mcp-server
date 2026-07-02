@@ -14,6 +14,8 @@ describe('HAOpsApiClient', () => {
       post: jest.fn(),
       put: jest.fn(),
       delete: jest.fn(),
+      request: jest.fn(),
+      interceptors: { request: { use: jest.fn() } },
     });
     mockedAxios.create = mockCreate;
     client = new HAOpsApiClient('http://localhost:3000', 'test-api-key');
@@ -2039,6 +2041,43 @@ describe('HAOpsApiClient', () => {
         const callArg = axiosInstance.put.mock.calls[0][0] as string;
         expect(callArg).not.toContain('cascade');
       });
+    });
+  });
+
+  describe('undefined/null path-segment guard (request interceptor)', () => {
+    // The constructor registers a request interceptor via
+    // axios.interceptors.request.use(fn). Grab that fn from the mock and
+    // exercise it directly — it must reject a path whose id segment
+    // stringified to "undefined"/"null" before the request is ever sent.
+    const getInterceptor = () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      return axiosInstance.interceptors.request.use.mock.calls[0][0] as (
+        config: { url?: string },
+      ) => unknown;
+    };
+
+    it('registers exactly one request interceptor', () => {
+      const axiosInstance = mockCreate.mock.results[0].value;
+      expect(axiosInstance.interceptors.request.use).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      '/api/projects/fdev/git/merge-requests/undefined',
+      '/api/projects/fdev/git/merge-requests/undefined/close',
+      '/api/projects/fdev/issues/null',
+      '/api/projects/fdev/git/merge-requests/undefined?verbose=true',
+    ])('throws HAOpsApiError for %s', (url) => {
+      const interceptor = getInterceptor();
+      expect(() => interceptor({ url })).toThrow(HAOpsApiError);
+    });
+
+    it.each([
+      '/api/projects/fdev/git/merge-requests/48f48c45-1a2b-4c3d-8e9f-0a1b2c3d4e5f',
+      '/api/projects/fdev/issues?status=open',
+      '/api/projects/my-undefined-project/modules', // "undefined" as substring is fine
+    ])('passes through a valid path %s', (url) => {
+      const interceptor = getInterceptor();
+      expect(interceptor({ url })).toEqual({ url });
     });
   });
 
