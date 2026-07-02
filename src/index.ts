@@ -92,6 +92,35 @@ export function formatWriteResult(
 }
 
 /**
+ * Strict RFC 4122 v1–v5 UUID form (version nibble 1–5, variant nibble 8/9/a/b),
+ * case-insensitive. The nil UUID is intentionally rejected — HAOps never mints
+ * or persists it. Mirrors the server-side guard in `lib/utils/validateUuid.ts`.
+ */
+const UUID_V1_V5_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Assert that a tool argument expected to be an entity UUID is actually a
+ * UUID before it reaches the API. Without this, an omitted/typo'd/undefined
+ * argument gets stringified into the request path (e.g.
+ * `/merge-requests/undefined`) and surfaces as a confusing Postgres 22P02
+ * downstream. Throwing here lets the handler's try/catch return a clean,
+ * actionable `isError` tool result instead.
+ *
+ * @param value - The argument value received from the tool call.
+ * @param field - The argument name, for the error message.
+ * @returns The validated UUID string (narrowed to `string`).
+ */
+export function assertUuid(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !UUID_V1_V5_REGEX.test(value)) {
+    throw new Error(
+      `Invalid ${field}: expected a UUID, got ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
+}
+
+/**
  * Build a fresh MCP `Server` instance with all HAOps tool & resource
  * handlers registered.
  *
@@ -7693,6 +7722,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         projectSlug: string;
         mergeRequestId: string;
       };
+      assertUuid(mergeRequestId, 'mergeRequestId');
 
       const mr = await apiClient.getMergeRequest(projectSlug, mergeRequestId) as Record<string, unknown>;
 
@@ -7784,6 +7814,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         verdict: string;
         body?: string;
       };
+      assertUuid(mergeRequestId, 'mergeRequestId');
 
       const result = await apiClient.reviewMergeRequest(projectSlug, mergeRequestId, { verdict, body }) as Record<string, unknown>;
 
@@ -7809,6 +7840,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         deleteSourceBranch?: boolean;
         mergeCommitMessage?: string;
       };
+      assertUuid(mergeRequestId, 'mergeRequestId');
 
       const result = await apiClient.mergeMergeRequest(projectSlug, mergeRequestId, {
         deleteSourceBranch, mergeCommitMessage,
@@ -8323,6 +8355,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'haops_close_merge_request') {
     try {
       const { projectSlug, mergeRequestId } = args as { projectSlug: string; mergeRequestId: string };
+      assertUuid(mergeRequestId, 'mergeRequestId');
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/git/merge-requests/${mergeRequestId}/close`);
       const { verbose } = args as { verbose?: boolean };
       return { content: [{ type: 'text', text: formatWriteResult('closed', result as unknown as Record<string, unknown>, !!verbose) }] };
@@ -8335,6 +8368,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'haops_reopen_merge_request') {
     try {
       const { projectSlug, mergeRequestId } = args as { projectSlug: string; mergeRequestId: string };
+      assertUuid(mergeRequestId, 'mergeRequestId');
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/git/merge-requests/${mergeRequestId}/reopen`);
       const { verbose } = args as { verbose?: boolean };
       return { content: [{ type: 'text', text: formatWriteResult('reopened', result as unknown as Record<string, unknown>, !!verbose) }] };
