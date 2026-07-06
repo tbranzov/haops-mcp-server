@@ -5644,6 +5644,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         mode?: 'lazy' | 'bundle';
       };
 
+      // Explicit arg validation (2026-07-07): every booting agent calls this
+      // tool first, and a missing/undefined arg used to surface only as the
+      // late URL-guard error ("URL path contains the literal 'undefined'"),
+      // which reads like a tool bug rather than a caller mistake. Two MCP
+      // servers (haops + sci-haops) expose identically-named tools, so
+      // schema mix-ups (e.g. passing `name` instead of `role`) are a real,
+      // recurring failure mode — name the missing param up front.
+      if (typeof projectSlug !== 'string' || !projectSlug) {
+        throw new Error(
+          "Validation error: 'projectSlug' (string) is required. " +
+            'If you loaded this tool via search, verify you are using THIS server\'s schema — ' +
+            'haops and sci-haops both expose haops_read_protocol.',
+        );
+      }
+      if (typeof role !== 'string' || !role) {
+        throw new Error(
+          "Validation error: 'role' (string) is required (e.g. architect, dev, qa, devops). " +
+            'If you loaded this tool via search, verify you are using THIS server\'s schema — ' +
+            'haops and sci-haops both expose haops_read_protocol.',
+        );
+      }
+
       // Default to lazy when no mode is given AND no historical version is
       // requested. When a version is requested we leave mode undefined so the
       // server returns the raw historical shape.
