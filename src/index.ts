@@ -3893,7 +3893,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_rag_query',
-        description: 'Hybrid BM25+vector retrieval over a HAOps project corpus. Returns top-K chunks with entity citations. Example: { projectSlug: "fdev", text: "F4 manifest cache", topK: 5 }',
+        description: 'Lexical (BM25) keyword retrieval over a HAOps project corpus. Returns top-K chunks with entity citations. Example: { projectSlug: "fdev", text: "F4 manifest cache", topK: 5 }',
         inputSchema: {
           type: 'object',
           properties: {
@@ -3904,11 +3904,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'array',
               items: { type: 'string' },
               description: 'Filter by entity types (e.g. ["feature", "module", "issue"]). Omit for all types.',
-            },
-            mode: {
-              type: 'string',
-              enum: ['hybrid', 'vector', 'bm25'],
-              description: 'Retrieval mode: "hybrid" (default, BM25+vector RRF), "vector" (dense only), "bm25" (keyword only)',
             },
             format: {
               type: 'string',
@@ -5538,7 +5533,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           '─── Fetch detail on demand ───────────────────────────────────────────────────',
           '• Doc section body:  haops_get_doc_section(projectSlug, artifactSlug, sectionSlug)',
           '• Full memory+logs:  haops_read_memory(entityType, entityId, full:true)',
-          '• Semantic search:   haops_rag_query(projectSlug, query)',
+          '• Keyword search (BM25): haops_rag_query(projectSlug, query)',
         );
 
         return {
@@ -8729,13 +8724,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         text: string;
         topK?: number;
         entityTypes?: string[];
-        mode?: 'hybrid' | 'vector' | 'bm25';
+        mode?: string;
         format?: 'compact' | 'ui';
       };
+      // The `mode` parameter was retired (hybrid/vector always silently collapsed to BM25).
+      // A long-lived agent session may still have the old cached schema and pass it —
+      // reject with a clear, actionable error instead of silently ignoring it or 500ing.
+      if (mode !== undefined) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Error: the 'mode' parameter has been removed from haops_rag_query. Retrieval is lexical (BM25) only — hybrid/vector modes were retired and always silently collapsed to BM25 anyway. Remove 'mode' from your call and retry.`,
+          }],
+          isError: true,
+        };
+      }
       const body: Record<string, unknown> = { text };
       if (topK !== undefined) body.topK = topK;
       if (entityTypes !== undefined) body.entityTypes = entityTypes;
-      if (mode !== undefined) body.mode = mode;
       if (format !== undefined) body.format = format;
       const result = await apiClient.request('POST', `/api/projects/${projectSlug}/rag/query`, body);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
