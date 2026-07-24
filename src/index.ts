@@ -1915,8 +1915,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           'Read the work protocol for a specific agent role in a project. Protocols define HOW agents should work (scope, workflow, handoff, etc.).\n\n' +
           'OUTPUT SHAPES (v2.6 — F4 composed protocols):\n' +
           '  • Legacy project (templateId IS NULL) — always returns the raw monolithic shape regardless of `mode`: { mode: "legacy", version, bytes, body, content, ... }. The `mode` and `bundle` params have no effect; output is byte-identical to v2.5.\n' +
-          '  • Composed project + mode="lazy" (DEFAULT) — { mode: "composed-lazy", version, bytes, body: "", coreContent, skillRefs[], warnings? }. Agent reads coreContent for the boot section, then uses haops_read_skill to fetch individual skill bodies on demand.\n' +
-          '  • Composed project + mode="bundle" — { mode: "composed-bundle", version, bytes, body, skillRefs[], warnings? }. Full composed markdown in `body` (template baseBody + each enabled skill body + customContent, joined with "---"). Use this when caching offline or when you need the full document in one round-trip.\n' +
+          '  • Composed project + mode="lazy" (DEFAULT) — { mode: "composed-lazy", version, bytes, body: "", coreContent, skillRefs[], warnings? }. Agent reads coreContent for the boot section, then uses haops_read_skill to fetch individual Ability bodies on demand.\n' +
+          '  • Composed project + mode="bundle" — { mode: "composed-bundle", version, bytes, body, skillRefs[], warnings? }. Full composed markdown in `body` (template baseBody + each enabled Ability body + customContent, joined with "---"). Use this when caching offline or when you need the full document in one round-trip.\n' +
           'When `version` is set, returns that specific historical row (raw DB shape — version history predates composed mode; mode/bundle are ignored).',
         inputSchema: {
           type: 'object',
@@ -1938,7 +1938,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               enum: ['lazy', 'bundle'],
               description:
-                "F4: how to resolve composed protocols. 'lazy' (default) returns the boot section + skill manifest; agent fetches skill bodies via haops_read_skill. 'bundle' returns the full composed markdown in one shot. Ignored for legacy projects.",
+                "F4: how to resolve composed protocols. 'lazy' (default) returns the boot section + Ability manifest; agent fetches Ability bodies via haops_read_skill. 'bundle' returns the full composed markdown in one shot. Ignored for legacy projects.",
             },
           },
           required: ['projectSlug', 'role'],
@@ -1946,7 +1946,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_update_protocol',
-        description: 'Update (create new version of) the work protocol for a specific agent role in a project. Creates a new version and marks the previous as historical. Architect and admin roles ONLY.\n\nPartial-body support: Provide ONLY the fields you want to change. Server carries forward unchanged fields.\n  • Common usage: pass only `templateId` to rebind a role template binding without re-sending the full markdown body.\n  • Common usage: pass only `skillsConfig` to enable/disable skills without re-sending the markdown body.\n  • Pass `content` only when you actually want to update the markdown text.\n\nF3 composed-protocol fields (ENABLE_COMPOSED_PROTOCOLS must be ON):\n  • templateId — UUID of a RoleTemplate to associate, or null to detach. Omit to carry forward current value.\n  • skillsConfig — override which skills are active and inject custom content. Omit to carry forward. Set to null to clear.',
+        description: 'Update (create new version of) the work protocol for a specific agent role in a project. Creates a new version and marks the previous as historical. Architect and admin roles ONLY.\n\nPartial-body support: Provide ONLY the fields you want to change. Server carries forward unchanged fields.\n  • Common usage: pass only `templateId` to rebind a role template binding without re-sending the full markdown body.\n  • Common usage: pass only `skillsConfig` to enable/disable Abilities without re-sending the markdown body.\n  • Pass `content` only when you actually want to update the markdown text.\n\nF3 composed-protocol fields (ENABLE_COMPOSED_PROTOCOLS must be ON):\n  • templateId — UUID of a RoleTemplate to associate, or null to detach. Omit to carry forward current value.\n  • skillsConfig — override which Abilities are active and inject custom content. Omit to carry forward. Set to null to clear.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1972,21 +1972,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             skillsConfig: {
               type: ['object', 'null'],
-              description: 'F3: Override active skills and custom content. Omit to carry forward; set to null to clear entirely.',
+              description: 'F3: Override active Abilities and custom content. Omit to carry forward; set to null to clear entirely.',
               properties: {
                 enabledSkillIds: {
                   type: 'array',
                   items: { type: 'string' },
-                  description: 'UUIDs of non-default skills to force-enable. Must reference existing, non-deprecated skills.',
+                  description: 'UUIDs of non-default Abilities to force-enable. Must reference existing, non-deprecated Abilities.',
                 },
                 disabledSkillIds: {
                   type: 'array',
                   items: { type: 'string' },
-                  description: 'UUIDs of default skills to suppress. Cannot include required skills.',
+                  description: 'UUIDs of default Abilities to suppress. Cannot include required Abilities.',
                 },
                 customContent: {
                   type: ['string', 'null'],
-                  description: 'Freeform markdown appended after the last skill section in composed mode.',
+                  description: 'Freeform markdown appended after the last Ability section in composed mode.',
                 },
               },
             },
@@ -2021,7 +2021,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_get_protocol_health',
         description:
-          'Returns per-role composed-protocol health: missing skill UUIDs, deprecated references, skill pack health, snapshot metadata. Surfaces drift programmatically (same data as the Project Settings → Protocol Health panel in HAOps Desktop UI). Requires ENABLE_COMPOSED_PROTOCOLS=true on the server.',
+          'Returns per-role composed-protocol health: missing Ability UUIDs, deprecated references, Ability pack health, snapshot metadata. Surfaces drift programmatically (same data as the Project Settings → Protocol Health panel in HAOps Desktop UI). Requires ENABLE_COMPOSED_PROTOCOLS=true on the server.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2045,7 +2045,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // ===== Skills Library Tools (F1) =====
       {
         name: 'haops_list_skills',
-        description: 'List agent skills (system-wide + optionally project-scoped). Skills are reusable, role-tagged knowledge units (e.g. "out-of-scope-findings", "three-layer-boot") that compose into agent protocols. Filter by scope, category, role, project, or free-text search. Deprecated skills are excluded by default.',
+        description: 'List agent Abilities (system-wide + optionally project-scoped). Abilities are reusable, role-tagged knowledge units (e.g. "out-of-scope-findings", "three-layer-boot") that compose into agent protocols. Filter by scope, category, role, project, or free-text search. Deprecated Abilities are excluded by default. Abilities are managed through the `haops_*skill*` MCP tools — the identifier keeps the legacy name; Ability is the concept, `skill` is the wire format.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2057,11 +2057,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             category: {
               type: 'string',
               enum: ['review', 'planning', 'testing', 'deployment', 'communication', 'memory', 'safety', 'other'],
-              description: 'Filter by skill category.',
+              description: 'Filter by Ability category.',
             },
             role: {
               type: 'string',
-              description: 'Filter by applicable role (architect/dev/qa/devops). Matches skills whose applicableRoles includes the role OR the "*" wildcard.',
+              description: 'Filter by applicable role (architect/dev/qa/devops). Matches Abilities whose applicableRoles includes the role OR the "*" wildcard.',
             },
             projectSlug: {
               type: 'string',
@@ -2073,7 +2073,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             includeDeprecated: {
               type: 'boolean',
-              description: 'Include deprecated skills (default: false).',
+              description: 'Include deprecated Abilities (default: false).',
             },
           },
         },
@@ -2081,13 +2081,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_read_skill',
         description:
-          'Read a single skill by its kebab-case name. Returns full markdown content + metadata (category, applicableRoles, version, ID, isDeprecated). Use this after haops_list_skills — or after a haops_read_protocol(mode="lazy") response\'s skillRefs[] manifest — to fetch the actual instructions on demand.',
+          'Read a single Ability by its kebab-case name. Returns full markdown content + metadata (category, applicableRoles, version, ID, isDeprecated). Use this after haops_list_skills — or after a haops_read_protocol(mode="lazy") response\'s skillRefs[] manifest — to fetch the actual instructions on demand. Abilities are managed through the `haops_*skill*` MCP tools — the identifier keeps the legacy name; Ability is the concept, `skill` is the wire format.',
         inputSchema: {
           type: 'object',
           properties: {
             name: {
               type: 'string',
-              description: 'Kebab-case skill name (e.g. "out-of-scope-findings").',
+              description: 'Kebab-case Ability name (e.g. "out-of-scope-findings").',
             },
             scope: {
               type: 'string',
@@ -2101,7 +2101,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             version: {
               type: 'number',
               description:
-                'F4 (v2.6): specific version number to read. If omitted, returns the current version. Used by lazy-loaded composed protocols to fetch a pinned version of a skill body.',
+                'F4 (v2.6): specific version number to read. If omitted, returns the current version. Used by lazy-loaded composed protocols to fetch a pinned version of an Ability body.',
             },
             raw: {
               type: 'boolean',
@@ -2114,36 +2114,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_create_skill',
         description:
-          'Create a new agent skill (system or project-scoped). Inserts version=1 with isCurrent=true. Admin-only on the server, gated by ENABLE_COMPOSED_PROTOCOLS. Returns the new skill row on success; 409 if a skill with the same name already exists in the target scope (use haops_update_skill to publish a new version instead).',
+          'Create a new agent Ability (system or project-scoped). Inserts version=1 with isCurrent=true. Admin-only on the server, gated by ENABLE_COMPOSED_PROTOCOLS. Returns the new Ability row on success; 409 if an Ability with the same name already exists in the target scope (use haops_update_skill to publish a new version instead). Abilities are managed through the `haops_*skill*` MCP tools — the identifier keeps the legacy name; Ability is the concept, `skill` is the wire format.',
         inputSchema: {
           type: 'object',
           properties: {
             scope: {
               type: 'string',
               enum: ['system', 'project'],
-              description: 'Scope of the new skill. "system" omits projectSlug; "project" requires it.',
+              description: 'Scope of the new Ability. "system" omits projectSlug; "project" requires it.',
             },
             name: {
               type: 'string',
-              description: 'Kebab-case skill name (1..100 chars, starts with a letter, e.g. "out-of-scope-findings").',
+              description: 'Kebab-case Ability name (1..100 chars, starts with a letter, e.g. "out-of-scope-findings").',
             },
             description: {
               type: 'string',
-              description: 'Short one-line description of what the skill teaches (shown in list views and template pickers).',
+              description: 'Short one-line description of what the Ability teaches (shown in list views and template pickers).',
             },
             content: {
               type: 'string',
-              description: 'Full markdown body of the skill (admin-trusted; no sanitization applied server-side).',
+              description: 'Full markdown body of the Ability (admin-trusted; no sanitization applied server-side).',
             },
             category: {
               type: 'string',
               enum: ['review', 'planning', 'testing', 'deployment', 'communication', 'memory', 'safety', 'resilience', 'git', 'database', 'other'],
-              description: 'Skill category for grouping in the catalogue.',
+              description: 'Ability category for grouping in the catalogue.',
             },
             applicableRoles: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Roles the skill applies to. Non-empty array of {architect, dev, qa, devops} or the wildcard ["*"].',
+              description: 'Roles the Ability applies to. Non-empty array of {architect, dev, qa, devops} or the wildcard ["*"].',
             },
             projectSlug: {
               type: 'string',
@@ -2160,18 +2160,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_update_skill',
         description:
-          'Publish a new version of an existing skill (PUT /api/skills/[name]). Server bumps version in a single transaction. A no-op update (no field differs from current) returns the current row WITHOUT a version bump (mirrors prompt PATCH semantics). At least one mutable field must be supplied. Admin-only, gated by ENABLE_COMPOSED_PROTOCOLS.',
+          'Publish a new version of an existing Ability (PUT /api/skills/[name]). Server bumps version in a single transaction. A no-op update (no field differs from current) returns the current row WITHOUT a version bump (mirrors prompt PATCH semantics). At least one mutable field must be supplied. Admin-only, gated by ENABLE_COMPOSED_PROTOCOLS. Abilities are managed through the `haops_*skill*` MCP tools — the identifier keeps the legacy name; Ability is the concept, `skill` is the wire format.',
         inputSchema: {
           type: 'object',
           properties: {
             name: {
               type: 'string',
-              description: 'Kebab-case skill name to update.',
+              description: 'Kebab-case Ability name to update.',
             },
             scope: {
               type: 'string',
               enum: ['system', 'project'],
-              description: 'Scope of the target skill. Defaults to "system".',
+              description: 'Scope of the target Ability. Defaults to "system".',
             },
             projectSlug: {
               type: 'string',
@@ -2188,7 +2188,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             category: {
               type: 'string',
               enum: ['review', 'planning', 'testing', 'deployment', 'communication', 'memory', 'safety', 'resilience', 'git', 'database', 'other'],
-              description: 'New skill category.',
+              description: 'New Ability category.',
             },
             applicableRoles: {
               type: 'array',
@@ -2197,11 +2197,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             isDeprecated: {
               type: 'boolean',
-              description: 'Mark the skill as deprecated (the resolver hides deprecated skills from default manifests, but they remain readable).',
+              description: 'Mark the Ability as deprecated (the resolver hides deprecated Abilities from default manifests, but they remain readable).',
             },
             cascade: {
               type: 'boolean',
-              description: 'When true, atomically re-wires all consumers (role templates with this skill in defaultSkills, skill packs containing this skill, project protocols with this skill in enabledSkillIds) to the NEW UUID in the same DB transaction. Recommended for any system skill bump. Default: false.',
+              description: 'When true, atomically re-wires all consumers (role templates with this Ability in defaultSkills, Ability packs containing this Ability, project protocols with this Ability in enabledSkillIds) to the NEW UUID in the same DB transaction. Recommended for any system Ability bump. Default: false.',
             },
             verbose: {
               type: 'boolean',
@@ -2214,18 +2214,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_deprecate_skill',
         description:
-          'Soft-delete + deprecate a skill (DELETE /api/skills/[name]). Cascades the soft-delete across ALL versions (current + historical) and flips isDeprecated=true on the current row. History remains visible via /api/skills/[name]/history for audit context. Admin-only, gated by ENABLE_COMPOSED_PROTOCOLS. Returns {message, versionCount}.',
+          'Soft-delete + deprecate an Ability (DELETE /api/skills/[name]). Cascades the soft-delete across ALL versions (current + historical) and flips isDeprecated=true on the current row. History remains visible via /api/skills/[name]/history for audit context. Admin-only, gated by ENABLE_COMPOSED_PROTOCOLS. Returns {message, versionCount}.',
         inputSchema: {
           type: 'object',
           properties: {
             name: {
               type: 'string',
-              description: 'Kebab-case skill name to soft-delete.',
+              description: 'Kebab-case Ability name to soft-delete.',
             },
             scope: {
               type: 'string',
               enum: ['system', 'project'],
-              description: 'Scope of the target skill. Defaults to "system".',
+              description: 'Scope of the target Ability. Defaults to "system".',
             },
             projectSlug: {
               type: 'string',
@@ -2244,18 +2244,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_get_skill_history',
         description:
-          'Returns the full version history of a named skill (GET /api/skills/[name]/history). Each entry contains the version number, publication timestamp, author, lifecycle state, and full content at that point in time. When diff=true the server computes unified diffs between consecutive versions and includes a `diff` field per entry (empty for v1, which has no predecessor). Use to audit content changes, recover from a bad publish, or inspect the lineage before bumping a high-impact skill.\n\nAdministrative note: soft-deleted (deprecated) skills still have their history accessible via this endpoint — paranoid=false on the server join so full audit lineage is preserved.',
+          'Returns the full version history of a named Ability (GET /api/skills/[name]/history). Each entry contains the version number, publication timestamp, author, lifecycle state, and full content at that point in time. When diff=true the server computes unified diffs between consecutive versions and includes a `diff` field per entry (empty for v1, which has no predecessor). Use to audit content changes, recover from a bad publish, or inspect the lineage before bumping a high-impact Ability.\n\nAdministrative note: soft-deleted (deprecated) Abilities still have their history accessible via this endpoint — paranoid=false on the server join so full audit lineage is preserved.',
         inputSchema: {
           type: 'object',
           properties: {
             name: {
               type: 'string',
-              description: 'Kebab-case skill name.',
+              description: 'Kebab-case Ability name.',
             },
             scope: {
               type: 'string',
               enum: ['system', 'project'],
-              description: 'Scope of the target skill. Defaults to "system".',
+              description: 'Scope of the target Ability. Defaults to "system".',
             },
             projectSlug: {
               type: 'string',
@@ -2301,24 +2301,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_bulk_publish_skills',
         description:
-          'Atomically publish multiple skills in a single DB transaction (POST /api/skills/bulk-publish). All version bumps happen in one round-trip; when cascade=true, consumer re-wiring (role templates, skill packs, project protocols) runs ONCE at the end — significantly cheaper than N sequential haops_update_skill calls during mass refactors.\n\nPartial-failure semantics: if ANY entry fails validation (unknown skill name, bad scope+projectSlug combo, duplicate entry), the server rolls back the ENTIRE transaction and returns a 400 with a per-entry error list. No skills are published unless ALL entries are valid. Check `totalFailed` in the response — 0 means full success.\n\nAdmin-only, requires ENABLE_COMPOSED_PROTOCOLS=true. Returns 404 when the feature flag is off (the route looks absent by design).\n\nWARNING: cascade=true re-wires ALL consumers of EVERY updated skill in one transaction. Use haops_preview_skill_cascade on high-impact skills before running to estimate blast radius.',
+          'Atomically publish multiple Abilities in a single DB transaction (POST /api/skills/bulk-publish). All version bumps happen in one round-trip; when cascade=true, consumer re-wiring (role templates, Ability packs, project protocols) runs ONCE at the end — significantly cheaper than N sequential haops_update_skill calls during mass refactors.\n\nPartial-failure semantics: if ANY entry fails validation (unknown Ability name, bad scope+projectSlug combo, duplicate entry), the server rolls back the ENTIRE transaction and returns a 400 with a per-entry error list. No Abilities are published unless ALL entries are valid. Check `totalFailed` in the response — 0 means full success.\n\nAdmin-only, requires ENABLE_COMPOSED_PROTOCOLS=true. Returns 404 when the feature flag is off (the route looks absent by design).\n\nWARNING: cascade=true re-wires ALL consumers of EVERY updated Ability in one transaction. Use haops_preview_skill_cascade on high-impact Abilities before running to estimate blast radius.',
         inputSchema: {
           type: 'object',
           properties: {
             entries: {
               type: 'array',
-              description: 'List of skills to publish. Each entry must have name + scope. Only supply the fields you want to change; unchanged fields carry forward (no-op entries return the current row without bumping version).',
+              description: 'List of Abilities to publish. Each entry must have name + scope. Only supply the fields you want to change; unchanged fields carry forward (no-op entries return the current row without bumping version).',
               items: {
                 type: 'object',
                 properties: {
                   name: {
                     type: 'string',
-                    description: 'Kebab-case skill name.',
+                    description: 'Kebab-case Ability name.',
                   },
                   scope: {
                     type: 'string',
                     enum: ['system', 'project'],
-                    description: 'Scope of the target skill.',
+                    description: 'Scope of the target Ability.',
                   },
                   projectSlug: {
                     type: 'string',
@@ -2348,11 +2348,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             cascade: {
               type: 'boolean',
-              description: 'When true, atomically re-wires ALL consumers of the updated skills (role templates containing them in defaultSkills, skill packs containing their IDs, project protocols with them in enabledSkillIds) to the NEW UUIDs, all in the same transaction. Recommended for mass refactors. Default: false.',
+              description: 'When true, atomically re-wires ALL consumers of the updated Abilities (role templates containing them in defaultSkills, Ability packs containing their IDs, project protocols with them in enabledSkillIds) to the NEW UUIDs, all in the same transaction. Recommended for mass refactors. Default: false.',
             },
             verbose: {
               type: 'boolean',
-              description: 'If true, include full skill JSON for each entry in the result output. Default: false.',
+              description: 'If true, include full Ability JSON for each entry in the result output. Default: false.',
             },
           },
           required: ['entries'],
@@ -2363,17 +2363,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_create_project_skill',
         description:
-          'Create a PROJECT-SCOPED skill (POST /api/projects/[slug]/skills). Project-scoped skills are visible only to that project\'s protocol resolver — they cannot be referenced by system role templates or other projects\' protocols. For skills you want reusable across all projects, use haops_create_skill with scope="system" instead.\n\nAdmin-only, requires ENABLE_COMPOSED_PROTOCOLS=true. Returns 409 if a non-deleted project skill with the same name already exists in this project — use haops_update_skill(scope="project", projectSlug=...) to publish a new version instead. Returns 404 when the feature flag is off.\n\nResponse includes id, scope="project", projectId and version=1.',
+          'Create a PROJECT-SCOPED Ability (POST /api/projects/[slug]/skills). Project-scoped Abilities are visible only to that project\'s protocol resolver — they cannot be referenced by system role templates or other projects\' protocols. For Abilities you want reusable across all projects, use haops_create_skill with scope="system" instead.\n\nAdmin-only, requires ENABLE_COMPOSED_PROTOCOLS=true. Returns 409 if a non-deleted project Ability with the same name already exists in this project — use haops_update_skill(scope="project", projectSlug=...) to publish a new version instead. Returns 404 when the feature flag is off.\n\nResponse includes id, scope="project", projectId and version=1.',
         inputSchema: {
           type: 'object',
           properties: {
             projectSlug: {
               type: 'string',
-              description: 'URL slug of the project this skill belongs to.',
+              description: 'URL slug of the project this Ability belongs to.',
             },
             name: {
               type: 'string',
-              description: 'Kebab-case skill name (1..100 chars, starts with a letter). Must be unique among current (non-deleted) project-scoped skills in this project.',
+              description: 'Kebab-case Ability name (1..100 chars, starts with a letter). Must be unique among current (non-deleted) project-scoped Abilities in this project.',
             },
             description: {
               type: 'string',
@@ -2381,21 +2381,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             content: {
               type: 'string',
-              description: 'Full markdown body of the skill (admin-trusted; no sanitization applied server-side).',
+              description: 'Full markdown body of the Ability (admin-trusted; no sanitization applied server-side).',
             },
             category: {
               type: 'string',
               enum: ['review', 'planning', 'testing', 'deployment', 'communication', 'memory', 'safety', 'resilience', 'git', 'database', 'other'],
-              description: 'Skill category for grouping in the catalogue.',
+              description: 'Ability category for grouping in the catalogue.',
             },
             applicableRoles: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Roles the skill applies to. Non-empty array of {architect, dev, qa, devops} or the wildcard ["*"].',
+              description: 'Roles the Ability applies to. Non-empty array of {architect, dev, qa, devops} or the wildcard ["*"].',
             },
             spawnLine: {
               type: 'string',
-              description: 'Optional short text injected into the agent spawn-line when this skill is active. Leave unset to use the default spawn-line assembly.',
+              description: 'Optional short text injected into the agent spawn-line when this Ability is active. Leave unset to use the default spawn-line assembly.',
             },
             verbose: {
               type: 'boolean',
@@ -2456,12 +2456,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             enabledSkillIds: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Optional. UUIDs of skills to enable in the preview (merged with template defaults). Leave unset to use the project\'s current enabledSkillIds.',
+              description: 'Optional. UUIDs of Abilities to enable in the preview (merged with template defaults). Leave unset to use the project\'s current enabledSkillIds.',
             },
             disabledSkillIds: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Optional. UUIDs of skills to disable in the preview. Leave unset to use the project\'s current disabledSkillIds.',
+              description: 'Optional. UUIDs of Abilities to disable in the preview. Leave unset to use the project\'s current disabledSkillIds.',
             },
             customContent: {
               type: 'string',
@@ -2480,18 +2480,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_preview_skill_cascade',
         description:
-          "Preview which consumers (role templates, skill packs, project protocols) would need re-wiring if the named skill is bumped via PUT. Read-only — does not mutate. Use BEFORE calling `haops_update_skill({ ..., cascade: true })` on a high-impact skill to estimate blast radius.",
+          "Preview which consumers (role templates, Ability packs, project protocols) would need re-wiring if the named Ability is bumped via PUT. Read-only — does not mutate. Use BEFORE calling `haops_update_skill({ ..., cascade: true })` on a high-impact Ability to estimate blast radius.",
         inputSchema: {
           type: 'object',
           properties: {
             name: {
               type: 'string',
-              description: 'Kebab-case skill name to preview cascade impact for.',
+              description: 'Kebab-case Ability name to preview cascade impact for.',
             },
             scope: {
               type: 'string',
               enum: ['system', 'project'],
-              description: 'Scope of the target skill. Required.',
+              description: 'Scope of the target Ability. Required.',
             },
             projectSlug: {
               type: 'string',
@@ -2528,7 +2528,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // ===== Role Template Tools (F2) =====
       {
         name: 'haops_list_role_templates',
-        description: 'List agent role templates. A role template bundles a core `baseBody` (boot + scope + handoff markdown) with a set of default skills, and serves as the starting point for an agent role (architect/dev/qa/devops). System templates are seeded; admins may publish project-specific custom templates.',
+        description: 'List agent role templates. A role template bundles a core `baseBody` (boot + scope + handoff markdown) with a set of default Abilities, and serves as the starting point for an agent role (architect/dev/qa/devops). System templates are seeded; admins may publish project-specific custom templates.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2546,7 +2546,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_read_role_template',
-        description: 'Read a single role template by its kebab-case name. Returns the current version with `baseBody` (full markdown) + `defaultSkills` hydrated (each entry includes skill name + description) + `ID` UUID. Use after haops_list_role_templates to fetch the full template contents.',
+        description: 'Read a single role template by its kebab-case name. Returns the current version with `baseBody` (full markdown) + `defaultSkills` hydrated (each entry includes Ability name + description) + `ID` UUID. Use after haops_list_role_templates to fetch the full template contents. Abilities are managed through the `haops_*skill*` MCP tools — the identifier keeps the legacy name; Ability is the concept, `skill` is the wire format.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2564,7 +2564,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_create_role_template',
-        description: 'Create a new agent role template (admin-only, requires composed-protocols feature flag). Templates are system-wide (no project scope) and always start at version=1, isCurrent=true, isSystem=false. `baseBody` is admin-trusted markdown. `defaultSkills` is the optional bundle of skill IDs auto-enabled when projects adopt the template (`required: true` makes the skill non-disable-able). Returns the created template row.',
+        description: 'Create a new agent role template (admin-only, requires composed-protocols feature flag). Templates are system-wide (no project scope) and always start at version=1, isCurrent=true, isSystem=false. `baseBody` is admin-trusted markdown. `defaultSkills` is the optional bundle of Ability IDs auto-enabled when projects adopt the template (`required: true` makes the Ability non-disable-able). Returns the created template row.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2587,14 +2587,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             defaultSkills: {
               type: 'array',
-              description: 'Optional list of skill references to bundle with this template. Each entry is {skillId, required}. Duplicate skillIds are rejected. UUIDs must reference current, non-deprecated skills.',
+              description: 'Optional list of Ability references to bundle with this template. Each entry is {skillId, required}. Duplicate skillIds are rejected. UUIDs must reference current, non-deprecated Abilities.',
               items: {
                 type: 'object',
                 properties: {
-                  skillId: { type: 'string', description: 'UUID of the skill.' },
+                  skillId: { type: 'string', description: 'UUID of the Ability.' },
                   required: {
                     type: 'boolean',
-                    description: 'If true, projects cannot disable this skill when adopting the template.',
+                    description: 'If true, projects cannot disable this Ability when adopting the template.',
                   },
                 },
                 required: ['skillId', 'required'],
@@ -2633,11 +2633,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             defaultSkills: {
               type: 'array',
-              description: 'Optional. Replacement bundle of skill references (full set, not a diff). UUIDs must reference current, non-deprecated skills.',
+              description: 'Optional. Replacement bundle of Ability references (full set, not a diff). UUIDs must reference current, non-deprecated Abilities.',
               items: {
                 type: 'object',
                 properties: {
-                  skillId: { type: 'string', description: 'UUID of the skill.' },
+                  skillId: { type: 'string', description: 'UUID of the Ability.' },
                   required: { type: 'boolean' },
                 },
                 required: ['skillId', 'required'],
@@ -2678,7 +2678,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_list_skill_packs',
         description:
-          'List skill packs — curated bundles of agent skills (e.g. helpdesk-pack, security-pack, mobile-pack) that owners adopt at project onboarding. Each pack groups related skill IDs under a category; the onboarding wizard pre-enables them in one click. System packs are seeded and cannot be deleted. Read-only on the MCP surface; mutations go through the web admin.',
+          'List Ability packs — curated bundles of agent Abilities (e.g. helpdesk-pack, security-pack, mobile-pack) that owners adopt at project onboarding. Each pack groups related Ability IDs under a category; the onboarding wizard pre-enables them in one click. System packs are seeded and cannot be deleted. Read-only on the MCP surface; mutations go through the web admin.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2701,7 +2701,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_create_skill_pack',
         description:
-          'Create a new skill pack (admin only, requires ENABLE_COMPOSED_PROTOCOLS=true on the server — returns 404 when the flag is off, by design). Body fields mirror POST /api/skill-packs: kebab-case `name` (1..100, leading letter), non-empty `description`, `category` from the SkillPackCategory enum, and an optional `skillIds` array of UUID strings (NOT skill names) referencing current, non-deprecated, system-scope Skill rows. `isFeatured` defaults to false. isSystem is always false here — system packs are seeded (F7-I6), not created via API. Returns the created entity.',
+          'Create a new Ability pack (admin only, requires ENABLE_COMPOSED_PROTOCOLS=true on the server — returns 404 when the flag is off, by design). Body fields mirror POST /api/skill-packs: kebab-case `name` (1..100, leading letter), non-empty `description`, `category` from the SkillPackCategory enum, and an optional `skillIds` array of UUID strings (NOT Ability names) referencing current, non-deprecated, system-scope Skill rows. `isFeatured` defaults to false. isSystem is always false here — system packs are seeded (F7-I6), not created via API. Returns the created entity.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2721,7 +2721,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             skillIds: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Optional array of skill UUIDs (NOT skill names) to bundle in this pack. Each UUID must reference a current, non-deprecated, system-scope Skill row. Defaults to an empty pack if omitted.',
+              description: 'Optional array of Ability UUIDs (NOT Ability names) to bundle in this pack. Each UUID must reference a current, non-deprecated, system-scope Skill row. Defaults to an empty pack if omitted.',
             },
             isFeatured: {
               type: 'boolean',
@@ -2738,7 +2738,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_update_skill_pack',
         description:
-          'Update an existing skill pack in place — no version bump (packs are unversioned; audit log captures the diff). Admin only, requires ENABLE_COMPOSED_PROTOCOLS=true. `name` and `isSystem` are immutable post-create. Supply only the fields you want to change; supplying none (or only same-as-current values) is a no-op that returns the current row unchanged (no audit row written). For `skillIds`, the array is a full replacement, not a patch — pass the complete desired set of UUIDs. Returns the updated entity.',
+          'Update an existing Ability pack in place — no version bump (packs are unversioned; audit log captures the diff). Admin only, requires ENABLE_COMPOSED_PROTOCOLS=true. `name` and `isSystem` are immutable post-create. Supply only the fields you want to change; supplying none (or only same-as-current values) is a no-op that returns the current row unchanged (no audit row written). For `skillIds`, the array is a full replacement, not a patch — pass the complete desired set of UUIDs. Returns the updated entity.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2758,7 +2758,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             skillIds: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Full replacement set of skill UUIDs (NOT a patch). Each must reference a current, non-deprecated, system-scope Skill row.',
+              description: 'Full replacement set of Ability UUIDs (NOT a patch). Each must reference a current, non-deprecated, system-scope Skill row.',
             },
             isFeatured: {
               type: 'boolean',
@@ -2775,7 +2775,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_deprecate_skill_pack',
         description:
-          'Soft-delete (deprecate) a skill pack — paranoid destroy on a single row (packs are unversioned, no cascade). Admin only, requires ENABLE_COMPOSED_PROTOCOLS=true. System packs (isSystem=true) cannot be deleted — the server returns 403; to "deprecate" a system pack, update its skillIds to empty via haops_update_skill_pack instead, or remove the seeder entry in code. Returns the server confirmation message.',
+          'Soft-delete (deprecate) an Ability pack — paranoid destroy on a single row (packs are unversioned, no cascade). Admin only, requires ENABLE_COMPOSED_PROTOCOLS=true. System packs (isSystem=true) cannot be deleted — the server returns 403; to "deprecate" a system pack, update its skillIds to empty via haops_update_skill_pack instead, or remove the seeder entry in code. Returns the server confirmation message.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2804,18 +2804,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_transition_skill',
         description:
-          'Transition a skill through its lifecycle (propose / publish / deprecate). Hits POST /api/skills/[name]/[action]. The server enforces the allowed-from-here state machine — on a disallowed transition you get a 409 with `from`, `to`, and the `allowed` set listed in the response. Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true on the server. For project-scope skills pass scope="project" + projectSlug.\n\nWARNING: The parameter is named `action` (values: propose/publish/deprecate) — NOT `status` or `targetStatus`. The underlying model field is called `status`, but the transition route uses `action` as the URL segment and the tool param name.',
+          'Transition an Ability through its lifecycle (propose / publish / deprecate). Hits POST /api/skills/[name]/[action]. The server enforces the allowed-from-here state machine — on a disallowed transition you get a 409 with `from`, `to`, and the `allowed` set listed in the response. Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true on the server. For project-scope Abilities pass scope="project" + projectSlug.\n\nWARNING: The parameter is named `action` (values: propose/publish/deprecate) — NOT `status` or `targetStatus`. The underlying model field is called `status`, but the transition route uses `action` as the URL segment and the tool param name.',
         inputSchema: {
           type: 'object',
           properties: {
             name: {
               type: 'string',
-              description: 'Kebab-case skill name to transition.',
+              description: 'Kebab-case Ability name to transition.',
             },
             scope: {
               type: 'string',
               enum: ['system', 'project'],
-              description: 'Scope of the target skill. "system" omits projectSlug; "project" requires it.',
+              description: 'Scope of the target Ability. "system" omits projectSlug; "project" requires it.',
             },
             action: {
               type: 'string',
@@ -2861,13 +2861,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_transition_skill_pack',
         description:
-          'Transition a skill pack through its lifecycle (propose / publish / deprecate). Hits POST /api/skill-packs/[name]/[action]. Packs are unversioned and system-wide. Server enforces the allowed-from-here state machine and returns 409 with `allowed` on a disallowed transition. System packs (isSystem=true) cannot be deprecated (server returns 403 — update skillIds to [] via haops_update_skill_pack instead). Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true.\n\nWARNING: The parameter is named `action` (values: propose/publish/deprecate) — NOT `status` or `targetStatus`. The underlying model field is called `status`, but the transition route uses `action` as the URL segment and the tool param name.',
+          'Transition an Ability pack through its lifecycle (propose / publish / deprecate). Hits POST /api/skill-packs/[name]/[action]. Packs are unversioned and system-wide. Server enforces the allowed-from-here state machine and returns 409 with `allowed` on a disallowed transition. System packs (isSystem=true) cannot be deprecated (server returns 403 — update skillIds to [] via haops_update_skill_pack instead). Admin-only, requires ENABLE_COMPOSED_PROTOCOLS=true.\n\nWARNING: The parameter is named `action` (values: propose/publish/deprecate) — NOT `status` or `targetStatus`. The underlying model field is called `status`, but the transition route uses `action` as the URL segment and the tool param name.',
         inputSchema: {
           type: 'object',
           properties: {
             name: {
               type: 'string',
-              description: 'Kebab-case name of the skill pack to transition.',
+              description: 'Kebab-case name of the Ability pack to transition.',
             },
             action: {
               type: 'string',
@@ -5730,8 +5730,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const enabled = (sc.enabledSkillIds as string[] | undefined) ?? [];
         const disabled = (sc.disabledSkillIds as string[] | undefined) ?? [];
         const custom = sc.customContent as string | undefined;
-        if (enabled.length > 0) headerLines.push(`Skills enabled: ${enabled.join(', ')}`);
-        if (disabled.length > 0) headerLines.push(`Skills disabled: ${disabled.join(', ')}`);
+        if (enabled.length > 0) headerLines.push(`Abilities enabled: ${enabled.join(', ')}`);
+        if (disabled.length > 0) headerLines.push(`Abilities disabled: ${disabled.join(', ')}`);
         if (custom) headerLines.push(`Custom content: (present, ${custom.length} chars)`);
       }
 
@@ -5743,11 +5743,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       if (protocolMode === 'composed-lazy') {
-        // Lazy: show coreContent + manifest. Agent fetches skill bodies via
+        // Lazy: show coreContent + manifest. Agent fetches Ability bodies via
         // haops_read_skill on demand.
         const skillRefs = (result.skillRefs as Array<Record<string, unknown>> | undefined) ?? [];
         headerLines.push('');
-        headerLines.push(`Skill manifest (${skillRefs.length} skills — use haops_read_skill to fetch bodies):`);
+        headerLines.push(`Ability manifest (${skillRefs.length} Abilities — use haops_read_skill to fetch bodies):`);
         for (const ref of skillRefs) {
           const flags: string[] = [];
           if (ref.required) flags.push('REQUIRED');
@@ -5767,7 +5767,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Bundle: full composed body. Manifest also returned for transparency.
         const skillRefs = (result.skillRefs as Array<Record<string, unknown>> | undefined) ?? [];
         headerLines.push('');
-        headerLines.push(`Composed from ${skillRefs.length} skills (manifest below body)`);
+        headerLines.push(`Composed from ${skillRefs.length} Abilities (manifest below body)`);
         headerLines.push('');
         headerLines.push('--- Composed protocol body ---');
         headerLines.push('');
@@ -5909,7 +5909,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const pad = (s: string, n: number) => s.padEnd(n);
       const header =
-        `${pad('Role', 13)}| ${pad('Status', 8)}| ${pad('Skills', 7)}| ${pad('Missing', 8)}| ${pad('Deprecated', 11)}| Size`;
+        `${pad('Role', 13)}| ${pad('Status', 8)}| ${pad('Abilities', 7)}| ${pad('Missing', 8)}| ${pad('Deprecated', 11)}| Size`;
       const divider =
         `${'-'.repeat(13)}|${'-'.repeat(9)}|${'-'.repeat(8)}|${'-'.repeat(9)}|${'-'.repeat(12)}|------`;
 
@@ -5943,7 +5943,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (missingWarnings.length > 0) {
             missingDetails.push(`  ${role}: ${missingWarnings.join(', ')}`);
           } else {
-            missingDetails.push(`  ${role}: ${r.missingCount} missing skill(s) — see raw output for UUIDs`);
+            missingDetails.push(`  ${role}: ${r.missingCount} missing ability/abilities — see raw output for UUIDs`);
           }
         }
 
@@ -5967,14 +5967,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         rows.push('');
         rows.push(`Pack health: ${health.packHealth.warnings.length} warning(s) across ${health.packHealth.totalPacksScanned} pack(s) scanned`);
         for (const w of health.packHealth.warnings) {
-          rows.push(`  ${w.packName} (${w.packId}): skill ${w.skillId} is ${w.reason}`);
+          rows.push(`  ${w.packName} (${w.packId}): Ability ${w.skillId} is ${w.reason}`);
         }
       }
 
       // Detail blocks
       if (missingDetails.length > 0) {
         rows.push('');
-        rows.push('Missing skills:');
+        rows.push('Missing Abilities:');
         rows.push(...missingDetails);
       }
 
@@ -6019,14 +6019,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       if (skills.length === 0) {
         return {
-          content: [{ type: 'text', text: 'No skills found for the given filters.' }],
+          content: [{ type: 'text', text: 'No Abilities found for the given filters.' }],
         };
       }
 
-      // One line per skill — name, scope, category, applicable roles, id, deprecated flag.
+      // One line per Ability — name, scope, category, applicable roles, id, deprecated flag.
       // The full content is fetched on demand via haops_read_skill so we don't blow
       // the agent's context window on every list.
-      const lines = [`Found ${skills.length} skill(s):`, ''];
+      const lines = [`Found ${skills.length} ability/abilities:`, ''];
       for (const s of skills) {
         const scope = s.scope as string;
         const category = s.category as string;
@@ -6046,7 +6046,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
-        content: [{ type: 'text', text: `Error listing skills: ${message}` }],
+        content: [{ type: 'text', text: `Error listing Abilities: ${message}` }],
         isError: true,
       };
     }
@@ -6074,7 +6074,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? (skill.applicableRoles as string[]).join(', ')
         : 'unknown';
       const header = [
-        `Skill: ${skill.name as string}`,
+        `Ability: ${skill.name as string}`,
         `ID: ${skill.id as string}`,
         `Scope: ${skill.scope as string}`,
         `Category: ${skill.category as string}`,
@@ -6094,7 +6094,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
-        content: [{ type: 'text', text: `Error reading skill: ${message}` }],
+        content: [{ type: 'text', text: `Error reading Ability: ${message}` }],
         isError: true,
       };
     }
@@ -6107,7 +6107,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   //   - Feature-flagged via ENABLE_COMPOSED_PROTOCOLS. When OFF, the routes
   //     return a bare {error:'Not found'} 404 by design ("looks absent"). We
   //     detect that specific shape and rewrite the message so the agent gets a
-  //     useful hint instead of a generic 404 ("did I typo the skill name?").
+  //     useful hint instead of a generic 404 ("did I typo the Ability name?").
   //   - PUT diffs against the current row and returns the current row WITHOUT a
   //     version bump when nothing changed (noop). We mirror that signal by
   //     showing the returned version in the success message.
@@ -6157,19 +6157,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? (skill.applicableRoles as string[]).join(', ')
         : 'unknown';
       const lines = [
-        `Skill created: ${skill.name as string}`,
+        `Ability created: ${skill.name as string}`,
         `Scope: ${skill.scope as string}${skill.projectId ? ` (projectId=${skill.projectId as string})` : ''}`,
         `Category: ${skill.category as string}`,
         `Version: ${skill.version ?? 1}`,
         `Applicable roles: ${roles}`,
-        `Skill ID: ${skill.id as string}`,
+        `Ability ID: ${skill.id as string}`,
       ];
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
       };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: formatSkillMutationError(error, 'creating skill') }],
+        content: [{ type: 'text', text: formatSkillMutationError(error, 'creating Ability') }],
         isError: true,
       };
     }
@@ -6194,11 +6194,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       if (history.length === 0) {
-        return { content: [{ type: 'text', text: `No history found for skill "${skillName}".` }] };
+        return { content: [{ type: 'text', text: `No history found for Ability "${skillName}".` }] };
       }
 
       const lines = [
-        `Skill history: ${skillName} (${history.length} version(s))`,
+        `Ability history: ${skillName} (${history.length} version(s))`,
         '',
       ];
       for (const entry of history) {
@@ -6219,7 +6219,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
-        content: [{ type: 'text', text: `Error getting skill history: ${message}` }],
+        content: [{ type: 'text', text: `Error getting Ability history: ${message}` }],
         isError: true,
       };
     }
@@ -6305,7 +6305,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
         lines.push('');
-        lines.push('NOTE: entire transaction was rolled back — no skills were published.');
+        lines.push('NOTE: entire transaction was rolled back — no Abilities were published.');
         lines.push('');
       }
 
@@ -6332,7 +6332,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: formatSkillMutationError(error, 'bulk publishing skills') }],
+        content: [{ type: 'text', text: formatSkillMutationError(error, 'bulk publishing Abilities') }],
         isError: true,
       };
     }
@@ -6379,18 +6379,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? (skill.applicableRoles as string[]).join(', ')
         : 'unknown';
       const lines = [
-        `Project skill created: ${skill.name as string}`,
+        `Project Ability created: ${skill.name as string}`,
         `Project: ${projectSlug}${skill.projectId ? ` (projectId=${skill.projectId as string})` : ''}`,
         `Scope: project`,
         `Category: ${skill.category as string}`,
         `Version: ${skill.version ?? 1}`,
         `Applicable roles: ${roles}`,
-        `Skill ID: ${skill.id as string}`,
+        `Ability ID: ${skill.id as string}`,
       ];
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: formatSkillMutationError(error, 'creating project skill') }],
+        content: [{ type: 'text', text: formatSkillMutationError(error, 'creating project Ability') }],
         isError: true,
       };
     }
@@ -6497,8 +6497,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const enabled = (sc.enabledSkillIds as string[] | undefined) ?? [];
         const disabled = (sc.disabledSkillIds as string[] | undefined) ?? [];
         const custom = sc.customContent as string | undefined;
-        if (enabled.length > 0) lines.push(`Skills enabled: ${enabled.join(', ')}`);
-        if (disabled.length > 0) lines.push(`Skills disabled: ${disabled.join(', ')}`);
+        if (enabled.length > 0) lines.push(`Abilities enabled: ${enabled.join(', ')}`);
+        if (disabled.length > 0) lines.push(`Abilities disabled: ${disabled.join(', ')}`);
         if (custom) lines.push(`Custom content: (present, ${custom.length} chars)`);
       }
 
@@ -6512,7 +6512,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const skillRefs = (result.skillRefs as Array<Record<string, unknown>> | undefined) ?? [];
       if (skillRefs.length > 0) {
         lines.push('');
-        lines.push(`Skill manifest (${skillRefs.length} skills — preview, NOT persisted):`);
+        lines.push(`Ability manifest (${skillRefs.length} Abilities — preview, NOT persisted):`);
         for (const ref of skillRefs) {
           const flags: string[] = [];
           if (ref.required) flags.push('REQUIRED');
@@ -6560,7 +6560,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const cp = preview.cascadePreview;
       const lines: string[] = [
-        `If skill ${preview.skillName} (current UUID ${preview.skillId}) is bumped, the following consumers reference the CURRENT UUID and would need rewiring:`,
+        `If Ability ${preview.skillName} (current UUID ${preview.skillId}) is bumped, the following consumers reference the CURRENT UUID and would need rewiring:`,
         '',
         `Role Templates (${cp.templates.length}):`,
       ];
@@ -6573,7 +6573,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
       }
       lines.push('');
-      lines.push(`Skill Packs (${cp.packs.length}):`);
+      lines.push(`Ability Packs (${cp.packs.length}):`);
       if (cp.packs.length === 0) {
         lines.push('  (none)');
       } else {
@@ -6608,10 +6608,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const message = error instanceof Error ? error.message : 'Unknown error';
       const hint =
         error instanceof Error && /404|not found/i.test(error.message)
-          ? ' (skill not found, or composed-protocols feature is disabled on the server)'
+          ? ' (Ability not found, or composed-protocols feature is disabled on the server)'
           : '';
       return {
-        content: [{ type: 'text', text: `Error previewing skill cascade: ${message}${hint}` }],
+        content: [{ type: 'text', text: `Error previewing Ability cascade: ${message}${hint}` }],
         isError: true,
       };
     }
@@ -6709,20 +6709,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? (skill.applicableRoles as string[]).join(', ')
         : 'unknown';
       const lines = [
-        `Skill updated: ${skill.name as string}`,
+        `Ability updated: ${skill.name as string}`,
         `Scope: ${skill.scope as string}`,
         `Category: ${skill.category as string}`,
         `Version: ${skill.version ?? 'N/A'} (no version bump = no-op update; new value = published new version)`,
         `Applicable roles: ${roles}`,
         skill.isDeprecated ? 'Status: DEPRECATED' : 'Status: active',
-        `Skill ID: ${skill.id as string}`,
+        `Ability ID: ${skill.id as string}`,
       ];
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
       };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: formatSkillMutationError(error, 'updating skill') }],
+        content: [{ type: 'text', text: formatSkillMutationError(error, 'updating Ability') }],
         isError: true,
       };
     }
@@ -6739,7 +6739,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = await apiClient.deprecateSkill(skillName, { scope, projectSlug });
 
       const lines = [
-        `Skill deprecated: ${skillName}`,
+        `Ability deprecated: ${skillName}`,
         `Scope: ${scope ?? 'system'}${projectSlug ? ` (projectSlug=${projectSlug})` : ''}`,
         `Soft-deleted ${result.versionCount} version(s) (current + historical).`,
         `Server message: ${result.message}`,
@@ -6751,7 +6751,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: formatSkillMutationError(error, 'deprecating skill') }],
+        content: [{ type: 'text', text: formatSkillMutationError(error, 'deprecating Ability') }],
         isError: true,
       };
     }
@@ -6770,7 +6770,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      // One line per template — name, base role, system flag, default-skill
+      // One line per template — name, base role, system flag, default-Ability
       // count, id. The full baseBody is fetched on demand via
       // haops_read_role_template so we don't blow the agent's context window
       // on every list (baseBody can be 50-200 lines per template).
@@ -6810,8 +6810,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      // Default skills come back hydrated from the API (name + description
-      // included). Render one line per skill so the agent gets the full
+      // Default Abilities come back hydrated from the API (name + description
+      // included). Render one line per Ability so the agent gets the full
       // bundle context without a second round-trip.
       const skillLines: string[] = [];
       if (Array.isArray(template.defaultSkills)) {
@@ -6833,8 +6833,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         template.description ? `Description: ${template.description as string}` : '',
         '',
         skillLines.length > 0
-          ? `Default skills (* = required):\n${skillLines.join('\n')}`
-          : 'Default skills: (none)',
+          ? `Default Abilities (* = required):\n${skillLines.join('\n')}`
+          : 'Default Abilities: (none)',
         '',
         '---',
         '',
@@ -6889,7 +6889,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         `ID: ${template.id as string}`,
         `Base role: ${template.baseRole as string}`,
         `Version: ${template.version ?? 1}`,
-        `Default skills: ${skills}`,
+        `Default Abilities: ${skills}`,
       ];
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (error) {
@@ -6950,7 +6950,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         `ID: ${template.id as string}`,
         `Base role: ${template.baseRole as string}`,
         `Version: ${template.version ?? 'N/A'}`,
-        `Default skills: ${skills}`,
+        `Default Abilities: ${skills}`,
       ];
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (error) {
@@ -6998,17 +6998,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       if (packs.length === 0) {
         return {
-          content: [{ type: 'text', text: 'No skill packs found for the given filters.' }],
+          content: [{ type: 'text', text: 'No Ability packs found for the given filters.' }],
         };
       }
 
       // One line per pack — name, category, system flag, featured flag,
-      // skillCount, short description tail, id. Skill IDs themselves are NOT
+      // skillCount, short description tail, id. Ability IDs themselves are NOT
       // hydrated server-side on the list endpoint (mirrors role-templates
       // pattern); agents can call GET /api/skill-packs/[name] via the admin
       // UI for hydration. Keeps the MCP response under any reasonable
       // context budget even when there are 50+ packs in the catalogue.
-      const lines = [`Found ${packs.length} skill pack(s):`, ''];
+      const lines = [`Found ${packs.length} Ability pack(s):`, ''];
       for (const p of packs) {
         const cat = (p.category as string) ?? 'unknown';
         const system = p.isSystem ? ' [system]' : '';
@@ -7025,7 +7025,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return {
-        content: [{ type: 'text', text: `Error listing skill packs: ${message}` }],
+        content: [{ type: 'text', text: `Error listing Ability packs: ${message}` }],
         isError: true,
       };
     }
@@ -7057,8 +7057,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         : 0;
       const { verbose } = args as { verbose?: boolean };
       return { content: [{ type: 'text', text: verbose
-        ? `Skill pack created: ${pack.name as string} (${pack.category as string}, ${idCount} skill(s))\n${JSON.stringify(pack, null, 2)}`
-        : `Created — ${pack.id as string} "${pack.name as string}" (${idCount} skills)` }] };
+        ? `Ability pack created: ${pack.name as string} (${pack.category as string}, ${idCount} ability/abilities)\n${JSON.stringify(pack, null, 2)}`
+        : `Created — ${pack.id as string} "${pack.name as string}" (${idCount} Abilities)` }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       // 404 from the gated POST means the feature flag is off on the server
@@ -7068,8 +7068,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         (error as { statusCode?: number } | null | undefined)?.statusCode;
       const friendly =
         statusCode === 404
-          ? 'Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Skill pack mutations are unavailable until the flag is enabled.'
-          : `Error creating skill pack: ${message}`;
+          ? 'Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Ability pack mutations are unavailable until the flag is enabled.'
+          : `Error creating Ability pack: ${message}`;
       return {
         content: [{ type: 'text', text: friendly }],
         isError: true,
@@ -7104,16 +7104,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         : 0;
       const { verbose } = args as { verbose?: boolean };
       return { content: [{ type: 'text', text: verbose
-        ? `Skill pack updated: ${pack.name as string} (${pack.category as string}, ${idCount} skill(s))\n${JSON.stringify(pack, null, 2)}`
-        : `Updated — ${pack.id as string} "${pack.name as string}" (${idCount} skills)` }] };
+        ? `Ability pack updated: ${pack.name as string} (${pack.category as string}, ${idCount} ability/abilities)\n${JSON.stringify(pack, null, 2)}`
+        : `Updated — ${pack.id as string} "${pack.name as string}" (${idCount} Abilities)` }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       const statusCode =
         (error as { statusCode?: number } | null | undefined)?.statusCode;
       const friendly =
         statusCode === 404 && message === 'Not found'
-          ? 'Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Skill pack mutations are unavailable until the flag is enabled.'
-          : `Error updating skill pack: ${message}`;
+          ? 'Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Ability pack mutations are unavailable until the flag is enabled.'
+          : `Error updating Ability pack: ${message}`;
       return {
         content: [{ type: 'text', text: friendly }],
         isError: true,
@@ -7125,12 +7125,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const { name: packName } = args as { name: string };
       const result = await apiClient.deprecateSkillPack(packName);
-      const msg = (result.message as string | undefined) ?? 'Skill pack deleted';
+      const msg = (result.message as string | undefined) ?? 'Ability pack deleted';
       return {
         content: [
           {
             type: 'text',
-            text: `Skill pack '${packName}' deprecated: ${msg}`,
+            text: `Ability pack '${packName}' deprecated: ${msg}`,
           },
         ],
       };
@@ -7140,8 +7140,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         (error as { statusCode?: number } | null | undefined)?.statusCode;
       const friendly =
         statusCode === 404 && message === 'Not found'
-          ? 'Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Skill pack mutations are unavailable until the flag is enabled.'
-          : `Error deprecating skill pack: ${message}`;
+          ? 'Composed protocols feature is disabled on the server (ENABLE_COMPOSED_PROTOCOLS=false). Ability pack mutations are unavailable until the flag is enabled.'
+          : `Error deprecating Ability pack: ${message}`;
       return {
         content: [{ type: 'text', text: friendly }],
         isError: true,
@@ -7151,7 +7151,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ===== Lifecycle Transition Handlers (P2·I8) =====
   //
-  // Three handlers — one per resource type (skill / role template / skill
+  // Three handlers — one per resource type (Ability / role template / Ability
   // pack), each gated on a single `action` enum. Consolidating into 3 tools
   // instead of 9 keeps the MCP catalogue small AND lets the action enum
   // double as in-schema documentation of the allowed transitions (the I9
@@ -7164,7 +7164,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   //   (3) Anything else — passthrough the raw message.
   const formatTransitionError = (
     error: unknown,
-    resource: 'skill' | 'role template' | 'skill pack',
+    resource: 'Ability' | 'role template' | 'Ability pack',
     action: string,
   ): string => {
     const message = error instanceof Error ? error.message : 'Unknown error';
@@ -7214,16 +7214,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
 
       const lines = [
-        `Skill transitioned: ${skill.name as string} → action='${action}'`,
+        `Ability transitioned: ${skill.name as string} → action='${action}'`,
         `Scope: ${skill.scope as string}${skill.projectId ? ` (projectId=${skill.projectId as string})` : ''}`,
         `Lifecycle state: ${(skill.lifecycleState as string) ?? (skill.state as string) ?? 'unknown'}`,
         `Version: ${skill.version ?? 'N/A'}`,
-        `Skill ID: ${skill.id as string}`,
+        `Ability ID: ${skill.id as string}`,
       ];
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: formatTransitionError(error, 'skill', (args as { action?: string }).action ?? 'unknown') }],
+        content: [{ type: 'text', text: formatTransitionError(error, 'Ability', (args as { action?: string }).action ?? 'unknown') }],
         isError: true,
       };
     }
@@ -7273,17 +7273,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? (pack.skillIds as unknown[]).length
         : 0;
       const lines = [
-        `Skill pack transitioned: ${pack.name as string} → action='${action}'`,
+        `Ability pack transitioned: ${pack.name as string} → action='${action}'`,
         `Lifecycle state: ${(pack.lifecycleState as string) ?? (pack.state as string) ?? 'unknown'}`,
         `Category: ${pack.category as string}`,
-        `Skill count: ${idCount}`,
+        `Ability count: ${idCount}`,
         pack.isSystem ? 'System: true' : 'System: false',
         `Pack ID: ${pack.id as string}`,
       ];
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: formatTransitionError(error, 'skill pack', (args as { action?: string }).action ?? 'unknown') }],
+        content: [{ type: 'text', text: formatTransitionError(error, 'Ability pack', (args as { action?: string }).action ?? 'unknown') }],
         isError: true,
       };
     }
