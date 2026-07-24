@@ -1617,6 +1617,51 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'haops_write_docsection_summary',
+        description: 'Write an agent-authored summary/covers/relevantTo/sectionStatus onto a DocSection\'s agentMetadata — the agent-facing replacement for the retired Gemma-distiller write path (fdev debf977a). Any caller with project write access can use this; it does NOT require an admin browser session. Read-merge semantics: fields you omit fall back to whatever is already stored (an omitted `relevantTo` does not erase an existing one) — pass only the fields you are actually updating. Authoring a summary DOES advance the section\'s freshness anchor to the section\'s CURRENT content (the opposite of the deterministic content-projection hook, which never does) — call this again after the section\'s content changes to re-anchor it and clear staleness. Uses `artifactSlug`/`sectionSlug` (not UUIDs) — same addressing as haops_update_doc_section/haops_get_doc_section.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: {
+              type: 'string',
+              description: 'The project slug',
+            },
+            artifactSlug: {
+              type: 'string',
+              description: 'Kebab-case slug of the parent documentation artifact (e.g. "deployment", "api-routes"). NOT a UUID — use haops_list_doc_artifacts to find the slug.',
+            },
+            sectionSlug: {
+              type: 'string',
+              description: 'The current section slug (used to locate the row)',
+            },
+            summary: {
+              type: 'string',
+              description: 'Agent-authored English prose summary of the section content (2-4 dense sentences: key facts, identifiers, decisions, gotchas — not document structure). Required, non-empty.',
+            },
+            covers: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Free-form topic phrases for this section (normalized lowercase/trimmed server-side). Omit to preserve the existing value.',
+            },
+            relevantTo: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Controlled-vocab routing tags: roles (architect/dev/qa/devops) + task-types (rag/helpdesk/auth/mobile/git/testing/memory/deploy/docs/notifications/livekit/email/distribution/communication). Unknown values are dropped server-side. Omit to preserve the existing value.',
+            },
+            sectionStatus: {
+              type: 'string',
+              enum: ['draft', 'current', 'outdated'],
+              description: 'Coarse lifecycle signal for the section content. Omit to preserve the existing value (defaults to "current" when there is no prior record).',
+            },
+            verbose: {
+              type: 'boolean',
+              description: 'If true, return the full API response instead of the compact summary (default: false)',
+            },
+          },
+          required: ['projectSlug', 'artifactSlug', 'sectionSlug', 'summary'],
+        },
+      },
+      {
         name: 'haops_get_doc_section',
         description: 'Get a specific documentation section content and metadata.',
         inputSchema: {
@@ -5258,6 +5303,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_write_docsection_summary') {
+    try {
+      const { projectSlug, artifactSlug, sectionSlug, summary, covers, relevantTo, sectionStatus, verbose } = args as {
+        projectSlug: string; artifactSlug: string; sectionSlug: string; summary: string;
+        covers?: string[]; relevantTo?: string[]; sectionStatus?: 'draft' | 'current' | 'outdated';
+        verbose?: boolean;
+      };
+      const body: Record<string, unknown> = { summary };
+      if (covers !== undefined) body.covers = covers;
+      if (relevantTo !== undefined) body.relevantTo = relevantTo;
+      if (sectionStatus !== undefined) body.sectionStatus = sectionStatus;
+      const result = await apiClient.request(
+        'PUT',
+        `/api/projects/${projectSlug}/docs/${artifactSlug}/sections/${sectionSlug}/summary`,
+        body,
+      );
+      const resultObj = result as Record<string, unknown>;
+      // Alias fields onto id/title/status so the compact (non-verbose) branch
+      // of formatWriteResult has something to show — the route's own response
+      // shape (sectionId/summary/sectionStatus) doesn't match those names.
+      const displayObj: Record<string, unknown> = {
+        ...resultObj,
+        id: resultObj.sectionId,
+        title: resultObj.summary,
+        status: resultObj.sectionStatus,
+      };
+      return { content: [{ type: 'text', text: formatWriteResult('wrote summary for', displayObj, !!verbose) }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
