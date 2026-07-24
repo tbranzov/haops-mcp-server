@@ -318,6 +318,9 @@ export interface CreateSkillRequest {
   category: SkillCategory;
   applicableRoles: string[];
   projectSlug?: string;
+  /** Optional short text injected into the agent spawn-line when this
+   *  Ability is active. Must be a single line (no newlines) if supplied. */
+  spawnLine?: string | null;
 }
 
 /**
@@ -332,6 +335,10 @@ export interface UpdateSkillRequest {
   category?: SkillCategory;
   applicableRoles?: string[];
   isDeprecated?: boolean;
+  /** Optional short text injected into the agent spawn-line when this
+   *  Ability is active. Pass null to clear it back to the default spawn-line
+   *  assembly. Must be a single line (no newlines) if supplied. */
+  spawnLine?: string | null;
 }
 
 /**

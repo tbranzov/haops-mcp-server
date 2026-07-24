@@ -2114,7 +2114,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_create_skill',
         description:
-          'Create a new agent Ability (system or project-scoped). Inserts version=1 with isCurrent=true. Admin-only on the server, gated by ENABLE_COMPOSED_PROTOCOLS. Returns the new Ability row on success; 409 if an Ability with the same name already exists in the target scope (use haops_update_skill to publish a new version instead). Abilities are managed through the `haops_*skill*` MCP tools — the identifier keeps the legacy name; Ability is the concept, `skill` is the wire format.',
+          'Create a new agent Ability (system or project-scoped). Inserts version=1 with isCurrent=true. Admin-only on the server, gated by ENABLE_COMPOSED_PROTOCOLS. Returns the new Ability row on success; 409 if an Ability with the same name already exists in the target scope (use haops_update_skill to publish a new version instead). Abilities are managed through the `haops_*skill*` MCP tools — the identifier keeps the legacy name; Ability is the concept, `skill` is the wire format.\n\nOptional `spawnLine` sets the boot-ritual text injected when this Ability is active — see the `spawnLine` param.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2149,6 +2149,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Project slug — REQUIRED when scope="project"; MUST be omitted when scope="system".',
             },
+            spawnLine: {
+              type: 'string',
+              description: 'Optional short text injected into the agent spawn-line when this Ability is active. Leave unset to use the default spawn-line assembly. Must be a single line (no newline characters).',
+            },
             verbose: {
               type: 'boolean',
               description: 'If true, return the full API response instead of the compact summary (default: false)',
@@ -2160,7 +2164,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_update_skill',
         description:
-          'Publish a new version of an existing Ability (PUT /api/skills/[name]). Server bumps version in a single transaction. A no-op update (no field differs from current) returns the current row WITHOUT a version bump (mirrors prompt PATCH semantics). At least one mutable field must be supplied. Admin-only, gated by ENABLE_COMPOSED_PROTOCOLS. Abilities are managed through the `haops_*skill*` MCP tools — the identifier keeps the legacy name; Ability is the concept, `skill` is the wire format.',
+          'Publish a new version of an existing Ability (PUT /api/skills/[name]). Server bumps version in a single transaction. A no-op update (no field differs from current) returns the current row WITHOUT a version bump (mirrors prompt PATCH semantics). At least one mutable field must be supplied. Admin-only, gated by ENABLE_COMPOSED_PROTOCOLS. Abilities are managed through the `haops_*skill*` MCP tools — the identifier keeps the legacy name; Ability is the concept, `skill` is the wire format.\n\n`spawnLine` is settable here too (including null to clear) — see the `spawnLine` param. Use `cascade: true` so consumers pick up the new version instead of staying pinned to the old UUID.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2198,6 +2202,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             isDeprecated: {
               type: 'boolean',
               description: 'Mark the Ability as deprecated (the resolver hides deprecated Abilities from default manifests, but they remain readable).',
+            },
+            spawnLine: {
+              type: ['string', 'null'],
+              description: 'New short text injected into the agent spawn-line when this Ability is active. Must be a single line (no newline characters). Pass null to clear it back to the default spawn-line assembly. Omit to carry forward the current value.',
             },
             cascade: {
               type: 'boolean',
@@ -6133,6 +6141,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         category,
         applicableRoles,
         projectSlug,
+        spawnLine,
       } = args as {
         scope: 'system' | 'project';
         name: string;
@@ -6141,6 +6150,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         category: string;
         applicableRoles: string[];
         projectSlug?: string;
+        spawnLine?: string | null;
       };
 
       const skill = await apiClient.createSkill({
@@ -6151,6 +6161,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         category: category as never, // narrowed by server-side validation
         applicableRoles,
         projectSlug,
+        spawnLine,
       });
 
       const roles = Array.isArray(skill.applicableRoles)
@@ -6162,6 +6173,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         `Category: ${skill.category as string}`,
         `Version: ${skill.version ?? 1}`,
         `Applicable roles: ${roles}`,
+        `Spawn line: ${skill.spawnLine ? `"${skill.spawnLine as string}"` : '(none)'}`,
         `Ability ID: ${skill.id as string}`,
       ];
       return {
@@ -6676,6 +6688,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         category,
         applicableRoles,
         isDeprecated,
+        spawnLine,
         cascade,
       } = args as {
         name: string;
@@ -6686,18 +6699,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         category?: string;
         applicableRoles?: string[];
         isDeprecated?: boolean;
+        spawnLine?: string | null;
         cascade?: boolean;
       };
 
       // Build the payload from supplied fields only. The server requires at
       // least one mutable field — we forward whatever the caller gave us and
       // let the server diff against the current row to decide noop vs publish.
+      // spawnLine uses `!== undefined` (not a truthiness check) so an explicit
+      // null (clear the field) is forwarded, not dropped.
       const payload: Record<string, unknown> = {};
       if (description !== undefined) payload.description = description;
       if (content !== undefined) payload.content = content;
       if (category !== undefined) payload.category = category;
       if (applicableRoles !== undefined) payload.applicableRoles = applicableRoles;
       if (isDeprecated !== undefined) payload.isDeprecated = isDeprecated;
+      if (spawnLine !== undefined) payload.spawnLine = spawnLine;
 
       const skill = await apiClient.updateSkill(
         skillName,
@@ -6714,6 +6731,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         `Category: ${skill.category as string}`,
         `Version: ${skill.version ?? 'N/A'} (no version bump = no-op update; new value = published new version)`,
         `Applicable roles: ${roles}`,
+        `Spawn line: ${skill.spawnLine ? `"${skill.spawnLine as string}"` : '(none)'}`,
         skill.isDeprecated ? 'Status: DEPRECATED' : 'Status: active',
         `Ability ID: ${skill.id as string}`,
       ];
