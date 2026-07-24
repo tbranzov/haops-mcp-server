@@ -2701,7 +2701,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_create_skill_pack',
         description:
-          'Create a new Ability pack (admin only, requires ENABLE_COMPOSED_PROTOCOLS=true on the server — returns 404 when the flag is off, by design). Body fields mirror POST /api/skill-packs: kebab-case `name` (1..100, leading letter), non-empty `description`, `category` from the SkillPackCategory enum, and an optional `skillIds` array of UUID strings (NOT Ability names) referencing current, non-deprecated, system-scope Skill rows. `isFeatured` defaults to false. isSystem is always false here — system packs are seeded (F7-I6), not created via API. Returns the created entity.',
+          'Create a new Ability pack (admin only, requires ENABLE_COMPOSED_PROTOCOLS=true on the server — returns 404 when the flag is off, by design). Body fields mirror POST /api/skill-packs: kebab-case `name` (1..100, leading letter), non-empty `description`, `category` from the SkillPackCategory enum, and an optional `skillIds` array of UUID strings (NOT Ability names) referencing current, non-deprecated, system-scope Ability rows. `isFeatured` defaults to false. isSystem is always false here — system packs are seeded (F7-I6), not created via API. Returns the created entity.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2721,7 +2721,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             skillIds: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Optional array of Ability UUIDs (NOT Ability names) to bundle in this pack. Each UUID must reference a current, non-deprecated, system-scope Skill row. Defaults to an empty pack if omitted.',
+              description: 'Optional array of Ability UUIDs (NOT Ability names) to bundle in this pack. Each UUID must reference a current, non-deprecated, system-scope Ability row. Defaults to an empty pack if omitted.',
             },
             isFeatured: {
               type: 'boolean',
@@ -2758,7 +2758,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             skillIds: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Full replacement set of Ability UUIDs (NOT a patch). Each must reference a current, non-deprecated, system-scope Skill row.',
+              description: 'Full replacement set of Ability UUIDs (NOT a patch). Each must reference a current, non-deprecated, system-scope Ability row.',
             },
             isFeatured: {
               type: 'boolean',
@@ -5943,7 +5943,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (missingWarnings.length > 0) {
             missingDetails.push(`  ${role}: ${missingWarnings.join(', ')}`);
           } else {
-            missingDetails.push(`  ${role}: ${r.missingCount} missing ability/abilities — see raw output for UUIDs`);
+            missingDetails.push(`  ${role}: ${r.missingCount} missing abilit${r.missingCount === 1 ? 'y' : 'ies'} — see raw output for UUIDs`);
           }
         }
 
@@ -6026,7 +6026,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // One line per Ability — name, scope, category, applicable roles, id, deprecated flag.
       // The full content is fetched on demand via haops_read_skill so we don't blow
       // the agent's context window on every list.
-      const lines = [`Found ${skills.length} ability/abilities:`, ''];
+      const lines = [`Found ${skills.length} abilit${skills.length === 1 ? 'y' : 'ies'}:`, ''];
       for (const s of skills) {
         const scope = s.scope as string;
         const category = s.category as string;
@@ -6784,7 +6784,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           : 0;
         const desc = t.description ? ` — ${t.description as string}` : '';
         const id = t.id ? ` (id: ${t.id as string})` : '';
-        lines.push(`- ${t.name as string} (${baseRole}${ver})${system} defaultSkills=${skills}${desc}${id}`);
+        lines.push(`- ${t.name as string} (${baseRole}${ver})${system} Abilities=${skills}${desc}${id}`);
       }
 
       return {
@@ -7016,7 +7016,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const skillIds = Array.isArray(p.skillIds) ? (p.skillIds as unknown[]).length : 0;
         const desc = p.description ? ` — ${p.description as string}` : '';
         const id = p.id ? ` (id: ${p.id as string})` : '';
-        lines.push(`- ${p.name as string} (${cat})${featured}${system} skills=${skillIds}${desc}${id}`);
+        lines.push(`- ${p.name as string} (${cat})${featured}${system} Abilities=${skillIds}${desc}${id}`);
       }
 
       return {
@@ -7057,8 +7057,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         : 0;
       const { verbose } = args as { verbose?: boolean };
       return { content: [{ type: 'text', text: verbose
-        ? `Ability pack created: ${pack.name as string} (${pack.category as string}, ${idCount} ability/abilities)\n${JSON.stringify(pack, null, 2)}`
-        : `Created — ${pack.id as string} "${pack.name as string}" (${idCount} Abilities)` }] };
+        ? `Ability pack created: ${pack.name as string} (${pack.category as string}, ${idCount} abilit${idCount === 1 ? 'y' : 'ies'})\n${JSON.stringify(pack, null, 2)}`
+        : `Created — ${pack.id as string} "${pack.name as string}" (${idCount} abilit${idCount === 1 ? 'y' : 'ies'})` }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       // 404 from the gated POST means the feature flag is off on the server
@@ -7104,8 +7104,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         : 0;
       const { verbose } = args as { verbose?: boolean };
       return { content: [{ type: 'text', text: verbose
-        ? `Ability pack updated: ${pack.name as string} (${pack.category as string}, ${idCount} ability/abilities)\n${JSON.stringify(pack, null, 2)}`
-        : `Updated — ${pack.id as string} "${pack.name as string}" (${idCount} Abilities)` }] };
+        ? `Ability pack updated: ${pack.name as string} (${pack.category as string}, ${idCount} abilit${idCount === 1 ? 'y' : 'ies'})\n${JSON.stringify(pack, null, 2)}`
+        : `Updated — ${pack.id as string} "${pack.name as string}" (${idCount} abilit${idCount === 1 ? 'y' : 'ies'})` }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       const statusCode =
