@@ -3789,16 +3789,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // ===== Repository Management =====
       {
         name: 'haops_manage_repositories',
-        description: 'Manage Git repositories for a HAOps project (list, get, create, update, delete). HAOps supports multiple repositories per project.',
+        description: 'Manage native HAOps git repositories for a project (list, get, create, delete) — the bare repos hosted on fdev (git_repositories table), NOT external CI/GitHub integrations. HAOps supports multiple repositories per project.',
         inputSchema: {
           type: 'object',
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
-            action: { type: 'string', enum: ['list', 'get', 'create', 'update', 'delete'], description: 'Action to perform' },
-            repositoryId: { type: 'string', description: 'Repository UUID (required for get, update, delete)' },
-            name: { type: 'string', description: 'Repository name (required for create, optional for update)' },
-            description: { type: 'string', description: 'Repository description (optional for create/update)' },
-            defaultBranch: { type: 'string', description: 'Default branch name (optional for create/update)' },
+            action: { type: 'string', enum: ['list', 'get', 'create', 'delete'], description: 'Action to perform' },
+            name: { type: 'string', description: 'Repository name (required for get, create, delete)' },
+            mirrorUrl: { type: 'string', description: 'Optional upstream URL to mirror on create' },
+            mirrorBranch: { type: 'string', description: 'Optional branch to mirror on create (used with mirrorUrl)' },
+            haopsIgnorePatterns: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional gitignore-style patterns to exclude from the repo on create',
+            },
+            adopt: {
+              type: 'boolean',
+              description: 'If true, register an existing on-disk bare repo instead of re-initializing it (create action only)',
+            },
             verbose: {
               type: 'boolean',
               description: 'If true, return the full API response instead of the compact summary (default: false)',
@@ -8578,28 +8586,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   // ===== Repository Management =====
+  // Native HAOps git repos (git_repositories table, bare repos on fdev),
+  // NOT the external-CI project_repositories table. See gitCreateRepository
+  // etc. in api/client.ts.
 
   if (name === 'haops_manage_repositories') {
     try {
-      const { projectSlug, action, repositoryId, name: repoName, description, defaultBranch } = args as {
+      const {
+        projectSlug,
+        action,
+        name: repoName,
+        mirrorUrl,
+        mirrorBranch,
+        haopsIgnorePatterns,
+        adopt,
+      } = args as {
         projectSlug: string;
         action: string;
-        repositoryId?: string;
         name?: string;
-        description?: string;
-        defaultBranch?: string;
+        mirrorUrl?: string;
+        mirrorBranch?: string;
+        haopsIgnorePatterns?: string[];
+        adopt?: boolean;
       };
 
       if (action === 'list') {
-        const result = await apiClient.request('GET', `/api/projects/${projectSlug}/repositories`);
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        try {
+          const result = await apiClient.gitListRepositories(projectSlug);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        } catch (error) {
+          const statusCode =
+            (error as { statusCode?: number } | null | undefined)?.statusCode;
+          // Defensively treat a 404-empty as "no repos yet" rather than an error.
+          if (statusCode === 404) {
+            return { content: [{ type: 'text', text: JSON.stringify([], null, 2) }] };
+          }
+          throw error;
+        }
       }
 
       if (action === 'get') {
-        if (!repositoryId) {
-          return { content: [{ type: 'text', text: 'Error: repositoryId is required for get action' }], isError: true };
+        if (!repoName) {
+          return { content: [{ type: 'text', text: 'Error: name is required for get action' }], isError: true };
         }
-        const result = await apiClient.request('GET', `/api/projects/${projectSlug}/repositories/${repositoryId}`);
+        const result = await apiClient.gitGetRepository(projectSlug, repoName);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }
 
@@ -8607,36 +8637,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!repoName) {
           return { content: [{ type: 'text', text: 'Error: name is required for create action' }], isError: true };
         }
-        const body: Record<string, unknown> = { name: repoName };
-        if (description) body.description = description;
-        if (defaultBranch) body.defaultBranch = defaultBranch;
-        const result = await apiClient.request('POST', `/api/projects/${projectSlug}/repositories`, body);
+        const body: { name: string; mirrorUrl?: string; mirrorBranch?: string; haopsIgnorePatterns?: string[]; adopt?: boolean } = { name: repoName };
+        if (mirrorUrl) body.mirrorUrl = mirrorUrl;
+        if (mirrorBranch) body.mirrorBranch = mirrorBranch;
+        if (haopsIgnorePatterns) body.haopsIgnorePatterns = haopsIgnorePatterns;
+        if (adopt !== undefined) body.adopt = adopt;
+        const result = await apiClient.gitCreateRepository(projectSlug, body);
         const { verbose } = args as { verbose?: boolean };
         return { content: [{ type: 'text', text: formatWriteResult('created', result as unknown as Record<string, unknown>, !!verbose) }] };
       }
 
-      if (action === 'update') {
-        if (!repositoryId) {
-          return { content: [{ type: 'text', text: 'Error: repositoryId is required for update action' }], isError: true };
-        }
-        const body: Record<string, unknown> = {};
-        if (repoName) body.name = repoName;
-        if (description !== undefined) body.description = description;
-        if (defaultBranch) body.defaultBranch = defaultBranch;
-        const result = await apiClient.request('PUT', `/api/projects/${projectSlug}/repositories/${repositoryId}`, body);
-        const { verbose } = args as { verbose?: boolean };
-        return { content: [{ type: 'text', text: formatWriteResult('updated', result as unknown as Record<string, unknown>, !!verbose) }] };
-      }
-
       if (action === 'delete') {
-        if (!repositoryId) {
-          return { content: [{ type: 'text', text: 'Error: repositoryId is required for delete action' }], isError: true };
+        if (!repoName) {
+          return { content: [{ type: 'text', text: 'Error: name is required for delete action' }], isError: true };
         }
-        await apiClient.request('DELETE', `/api/projects/${projectSlug}/repositories/${repositoryId}`);
-        return { content: [{ type: 'text', text: `Repository ${repositoryId} deleted.` }] };
+        await apiClient.gitDeleteRepository(projectSlug, repoName);
+        return { content: [{ type: 'text', text: `Repository "${repoName}" deleted.` }] };
       }
 
-      return { content: [{ type: 'text', text: `Unknown action: ${action}. Use list, get, create, update, or delete.` }], isError: true };
+      return { content: [{ type: 'text', text: `Unknown action: ${action}. Use list, get, create, or delete.` }], isError: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error managing repositories: ${message}` }], isError: true };

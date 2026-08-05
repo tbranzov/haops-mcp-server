@@ -2761,6 +2761,74 @@ export class HAOpsApiClient {
     }
   }
 
+  // ===== Native Git Repository Management (git_repositories) =====
+  // NOTE: distinct from the external-CI `project_repositories` table — these
+  // hit the /git family that manages HAOps's own bare repos on fdev.
+
+  async gitListRepositories(
+    projectSlug: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git`,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async gitGetRepository(
+    projectSlug: string,
+    repositoryName: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.get<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git`,
+        { params: { repo: repositoryName } },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async gitCreateRepository(
+    projectSlug: string,
+    body: {
+      name: string;
+      mirrorUrl?: string;
+      mirrorBranch?: string;
+      haopsIgnorePatterns?: string[];
+      adopt?: boolean;
+    },
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.post<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git`,
+        body,
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
+  async gitDeleteRepository(
+    projectSlug: string,
+    repositoryName: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.axios.delete<Record<string, unknown>>(
+        `/api/projects/${projectSlug}/git`,
+        { params: { repo: repositoryName } },
+      );
+      return response.data;
+    } catch (error) {
+      return this.handleError(error);
+    }
+  }
+
   // ===== SSH Key Management =====
 
   async listSshKeys(): Promise<Record<string, unknown>[]> {
