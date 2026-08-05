@@ -2763,7 +2763,7 @@ export class HAOpsApiClient {
 
   // ===== Native Git Repository Management (git_repositories) =====
   // NOTE: distinct from the external-CI `project_repositories` table — these
-  // hit the /git family that manages HAOps's own bare repos on fdev.
+  // hit the /git family that manages HAOps's own native bare git repos.
 
   async gitListRepositories(
     projectSlug: string,

@@ -3789,7 +3789,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // ===== Repository Management =====
       {
         name: 'haops_manage_repositories',
-        description: 'Manage native HAOps git repositories for a project (list, get, create, delete) — the bare repos hosted on fdev (git_repositories table), NOT external CI/GitHub integrations. HAOps supports multiple repositories per project.',
+        description: 'Manage native HAOps git repositories for a project (list, get, create, delete) — the native bare git repos (git_repositories table), NOT external CI/GitHub integrations. HAOps supports multiple repositories per project.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -8586,7 +8586,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   // ===== Repository Management =====
-  // Native HAOps git repos (git_repositories table, bare repos on fdev),
+  // Native HAOps git repos (git_repositories table, native bare git repos),
   // NOT the external-CI project_repositories table. See gitCreateRepository
   // etc. in api/client.ts.
 
