@@ -131,7 +131,7 @@ export class HAOpsApiClient {
   }
 
   // Generic HTTP request method for new endpoints
-  async request(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, data?: Record<string, unknown>): Promise<unknown> {
+  async request(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, data?: Record<string, unknown>): Promise<unknown> {
     try {
       const response = await this.axios.request({ method, url, data });
       return response.data;

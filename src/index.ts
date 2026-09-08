@@ -8,7 +8,8 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { HAOpsApiClient } from './api/client.js';
+import { HAOpsApiClient, HAOpsApiError } from './api/client.js';
+import dagre from 'dagre';
 import { parseCliArgs } from './cli-args.js';
 import type {
   CreateModuleRequest,
@@ -89,6 +90,63 @@ export function formatWriteResult(
   // Hard cap at 200 chars (title truncation only)
   if (compact.length > 200) compact = compact.slice(0, 197) + '…';
   return compact;
+}
+
+// ===== Diagram Studio helpers (module d881186f) =====
+// Shared by the element-mutation tools (add/update/delete/batch/auto-arrange/
+// set-bpmn-xml), which all follow the same read-modify-write shape: fetch
+// current content + contentHash, mutate locally, PATCH back with that hash
+// as the optimistic-concurrency precondition.
+
+interface DiagramContentShape {
+  nodes: Array<Record<string, unknown>>;
+  edges: Array<Record<string, unknown>>;
+  viewport?: unknown;
+  groups?: unknown;
+  bpmnXml?: string;
+}
+
+interface DiagramWithContent {
+  id: string;
+  diagramType?: string;
+  content: DiagramContentShape;
+  contentHash?: string;
+}
+
+async function fetchDiagramForMutation(projectSlug: string, diagramId: string): Promise<DiagramWithContent> {
+  const current = await apiClient.request('GET', `/api/projects/${projectSlug}/diagrams/${diagramId}`);
+  return current as DiagramWithContent;
+}
+
+async function writeDiagramContent(
+  projectSlug: string,
+  diagramId: string,
+  content: DiagramContentShape,
+  baseContentHash: string | undefined,
+): Promise<unknown> {
+  const body: Record<string, unknown> = { content };
+  if (baseContentHash !== undefined) body.baseContentHash = baseContentHash;
+  return apiClient.request('PATCH', `/api/projects/${projectSlug}/diagrams/${diagramId}`, body);
+}
+
+/** True when `error` is the diagram PATCH route's structured 409 {error:'stale'} body. */
+function isDiagramStale409(error: unknown): boolean {
+  if (!(error instanceof HAOpsApiError) || error.statusCode !== 409) return false;
+  const body = error.response as { error?: string } | undefined;
+  return body?.error === 'stale';
+}
+
+/** Standard "nothing was written, just retry" message for a stale 409 on a diagram write tool. */
+function diagramStaleMessage(toolName: string): string {
+  return (
+    `Error: stale — the diagram changed between the read and the write (someone else saved in the meantime). `
+    + `Nothing was written. Just retry ${toolName} — it re-reads the current content each time.`
+  );
+}
+
+/** A fresh random element id in the same shape the app's canvas generates. */
+function randomElementId(prefix: 'node' | 'edge' | 'grp'): string {
+  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 /**
@@ -4024,6 +4082,567 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
           },
           required: ['projectSlug'],
+        },
+      },
+
+      // ===== Diagram Studio Tools (module d881186f) =====
+      // Core CRUD/version/link tools (issue d73aa6c8) + agent-ergonomic D4
+      // tools (issue b6f11bbd — delete/batch element ops, auto-arrange,
+      // on-demand render, unbind, new-from-template). Intended for
+      // architect/dev roles. A Diagram is a first-class project artifact —
+      // authored {nodes, edges, viewport} DATA (like ReactFlow), not an
+      // image — except diagramType "bpmn", which stores BPMN 2.0 XML at
+      // content.bpmnXml instead (nodes/edges stay empty).
+      {
+        name: 'haops_create_diagram',
+        description:
+          'Create a new Diagram Studio diagram — a first-class project artifact (own identity): authored '
+          + 'nodes/edges/viewport DATA, not a rendered image. Starts empty; use haops_add_diagram_element / '
+          + 'haops_batch_diagram_elements / haops_update_diagram to populate it. Unrelated to '
+          + 'haops_render_stored_diagram, which renders this SAVED diagram to SVG/PNG for viewing.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            title: { type: 'string', description: 'Diagram title' },
+            diagramType: {
+              type: 'string',
+              enum: ['flowchart', 'bpmn', 'er', 'uml_usecase', 'uml_sequence', 'system', 'freeform'],
+              description:
+                'Diagram type (default: freeform). All types except bpmn use the interactive {nodes, edges, '
+                + 'viewport} shape (see haops_update_diagram) with type-appropriate node `type` values (e.g. '
+                + 'flowchart.process|decision|terminator, er.entity|relationship, uml.actor|usecase, '
+                + 'system.service|server|database, layout.zone, or "generic"). bpmn is the exception: it stores '
+                + 'BPMN 2.0 XML at content.bpmnXml — after creating, call haops_set_bpmn_diagram_xml to populate it.',
+            },
+            folderId: { type: 'string', description: 'DiagramFolder UUID to file this diagram under (optional; default: unfiled)' },
+          },
+          required: ['projectSlug', 'title'],
+        },
+      },
+      {
+        name: 'haops_list_diagrams',
+        description:
+          'List diagrams in a project. Thin shape (id, title, diagramType, status, timestamps, creator) — NO '
+          + 'content body. Use haops_get_diagram for full nodes/edges/viewport content. All filters are optional '
+          + 'and additive — omitting all of them lists every diagram in the project. isTemplate:true lists '
+          + 'template diagrams (pair with haops_new_diagram_from_template to start a new diagram from one).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            search: { type: 'string', description: 'Title substring filter (case-insensitive)' },
+            type: {
+              type: 'string',
+              enum: ['flowchart', 'bpmn', 'er', 'uml_usecase', 'uml_sequence', 'system', 'freeform'],
+              description: 'Exact diagramType match',
+            },
+            status: { type: 'string', enum: ['draft', 'ready', 'archived'], description: 'Exact status match' },
+            authorId: { type: 'string', description: 'Exact creator (createdById) UUID match' },
+            updatedAfter: { type: 'string', description: 'ISO date/datetime — only diagrams updated at or after this' },
+            updatedBefore: { type: 'string', description: 'ISO date/datetime — only diagrams updated at or before this' },
+            boundLinkableType: {
+              type: 'string',
+              enum: ['Module', 'Feature', 'Issue', 'DocSection', 'HelpArticle'],
+              description: 'Only diagrams bound (via haops_link_diagram) to at least one entity of this type',
+            },
+            boundLinkableId: {
+              type: 'string',
+              description: 'Narrow boundLinkableType to a specific target entity UUID (requires boundLinkableType)',
+            },
+            folderId: { type: 'string', description: 'A DiagramFolder UUID, or the sentinel "unfiled" for diagrams with no folder' },
+            tag: { type: 'string', description: 'Diagrams whose tags array contains this exact string' },
+            isTemplate: { type: 'boolean', description: 'Filter to template diagrams (true) or non-templates (false)' },
+            sort: {
+              type: 'string',
+              enum: ['updatedAt', 'createdAt', 'title', 'type'],
+              description: 'Sort order (default: updatedAt desc)',
+            },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_get_diagram',
+        description:
+          "Get a diagram's full content (nodes, edges, viewport, or bpmnXml) plus its contentHash. Save the "
+          + 'returned contentHash and pass it back as baseContentHash on your next haops_update_diagram call (or '
+          + 'just use haops_add_diagram_element / haops_batch_diagram_elements / haops_auto_arrange_diagram, which '
+          + 'auto-fetch it for you) to avoid a blind overwrite of a concurrent human/agent edit.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_update_diagram',
+        description:
+          'Update a diagram (title, status, content, folder, tags, and/or template flag). Concurrency: when the '
+          + "call includes `content` and neither `baseContentHash` nor `skipPrecondition` is supplied, this tool "
+          + "auto-fetches the diagram's CURRENT contentHash and sends it — the safe path is the default. 409 stale "
+          + 'means another writer changed it first (nothing written); re-fetch via haops_get_diagram, reapply your '
+          + 'change, and retry. skipPrecondition:true forces a blind overwrite. When sending `content`, send the '
+          + 'FULL {nodes, edges, viewport} object — no partial/single-element patches; use '
+          + 'haops_add_diagram_element / haops_update_diagram_element / haops_delete_diagram_element / '
+          + 'haops_batch_diagram_elements for single- or multi-element edits.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            title: { type: 'string', description: 'New title (optional)' },
+            status: { type: 'string', enum: ['draft', 'ready', 'archived'], description: 'New status (optional)' },
+            content: {
+              type: 'object',
+              description:
+                'Full replacement content (optional): { nodes: [...], edges: [...], viewport: {x,y,zoom}, groups?: '
+                + '[...], bpmnXml? }. nodes/edges/viewport required when content is sent; groups omitted means "no '
+                + 'groups" (round-trip the diagram\'s current groups from haops_get_diagram if you want to keep '
+                + 'them).',
+              properties: {
+                nodes: { type: 'array', items: { type: 'object' } },
+                edges: { type: 'array', items: { type: 'object' } },
+                viewport: {
+                  type: 'object',
+                  properties: { x: { type: 'number' }, y: { type: 'number' }, zoom: { type: 'number' } },
+                },
+                groups: { type: 'array', items: { type: 'object' } },
+                bpmnXml: { type: 'string', description: 'BPMN 2.0 XML (bpmn diagrams only) — prefer haops_set_bpmn_diagram_xml, which adds a layout-preservation guard.' },
+              },
+            },
+            baseContentHash: {
+              type: 'string',
+              description: 'Optimistic-concurrency precondition (advanced). Auto-filled from the current contentHash when omitted and content is present.',
+            },
+            skipPrecondition: { type: 'boolean', description: 'Set true to deliberately skip the auto-fetch precondition and blind-overwrite (rare).' },
+            isTemplate: { type: 'boolean', description: 'Flag/unflag this diagram as a "New from template" starter (optional).' },
+            folderId: { type: 'string', description: 'Move to this DiagramFolder UUID, or null to move to Uncategorized (optional).' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Full tags array replacement (optional; use haops_get_diagram to read current tags first if you want to append).' },
+            enabledCollections: { type: 'array', items: { type: 'string' }, description: 'Shape-palette collection filter shown in the editor; null shows all (optional, metadata only — not part of the content-hash precondition).' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_delete_diagram',
+        description: 'Delete a diagram (and its versions, links, folder-membership, comments).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_clone_diagram',
+        description:
+          "Clone a diagram — deep-copies its content (nodes/edges/viewport, or bpmnXml for bpmn diagrams) into a "
+          + "brand-new diagram with its own fresh version lineage (starts empty, no version rows copied, no "
+          + "thumbnail carried over). Title defaults to \"Copy of <source title>\" when omitted. Use before a "
+          + "significant restructure you might want to abandon, or to fork a starting point without touching the "
+          + "source. To start a new diagram from a TEMPLATE (isTemplate:true diagram), prefer "
+          + "haops_new_diagram_from_template — same underlying operation with agent-friendlier defaults.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Source diagram UUID to clone' },
+            title: { type: 'string', description: 'Title for the clone (optional; defaults to "Copy of <source title>")' },
+            bindings: {
+              type: 'string',
+              enum: ['copy', 'none'],
+              description:
+                "What diagram_links (whole-diagram bindings, see haops_link_diagram) the clone gets: 'copy' "
+                + "duplicates the source's bindings as new rows on the clone; 'none' (default) starts with no bindings.",
+            },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_set_bpmn_diagram_xml',
+        description:
+          'Set (create or replace) a bpmn Diagram\'s BPMN 2.0 XML — links haops_create_diagram (diagramType:'
+          + '"bpmn") to the bpmn-js editor. A single-process diagram is semantics-only (no bpmndi:BPMNDiagram DI/'
+          + 'coordinates — layout is generated when opened in the editor), but each flow node still needs explicit '
+          + '<bpmn:incoming>/<bpmn:outgoing> children; a multi-role collaboration with pools/lanes MUST ship its '
+          + 'own DI (the auto-layouter drops swim-lane bands). '
+          + 'LAYOUT-PRESERVATION: if the target diagram already carries DI (a human/editor-authored layout: shape '
+          + 'coordinates + edge waypoints) and your bpmnXml is semantics-only (no DI), this tool REFUSES by default '
+          + '(nothing written) so a semantics-only rewrite cannot silently discard that layout. To recover: fetch '
+          + 'the current XML (haops_get_diagram -> content.bpmnXml), edit it in place keeping its DI, and set that '
+          + 'back; OR pass overwriteLayout:true to intentionally replace the laid-out diagram with your '
+          + 'semantics-only one. Supplying bpmnXml that itself carries DI is always allowed. Uses the same '
+          + 'auto-fetched contentHash precondition as other diagram writes (skipPrecondition:true to force a blind '
+          + 'overwrite). Errors (nothing written) if the target diagram\'s diagramType isn\'t "bpmn". Does NOT '
+          + 'validate the XML against bpmnlint (that infra lands with the BPMN 2.0 Mode feature) — malformed XML is '
+          + 'written as-is; open it in the bpmn-js editor to check it visually.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID (must have diagramType "bpmn")' },
+            bpmnXml: { type: 'string', description: 'BPMN 2.0 XML (semantics-only or DI-bearing — see description).' },
+            overwriteLayout: {
+              type: 'boolean',
+              description:
+                'Set true to intentionally overwrite a DI-bearing (human-laid-out) diagram with your '
+                + 'semantics-only XML, discarding stored shape positions/waypoints. Default false: the tool '
+                + 'refuses that specific case with nothing written. No effect when the target has no DI, or when '
+                + 'your bpmnXml already carries its own DI.',
+            },
+            baseContentHash: { type: 'string', description: 'Optimistic-concurrency precondition (advanced). Auto-filled from the current contentHash when omitted.' },
+            skipPrecondition: { type: 'boolean', description: 'Set true to deliberately skip the auto-fetch precondition and blind-overwrite (rare).' },
+          },
+          required: ['projectSlug', 'diagramId', 'bpmnXml'],
+        },
+      },
+      {
+        name: 'haops_create_diagram_version',
+        description:
+          "Create a MANUAL named checkpoint of the diagram's CURRENT content (snapshots content as-is). Use this "
+          + 'before a significant refactor so you (or a human) can revert to this exact point later via '
+          + 'haops_restore_diagram_version — cheaper and more intentional than relying solely on the '
+          + 'auto-snapshot-on-write trail (every content-changing write already snapshots the PRIOR content).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            label: { type: 'string', description: 'Short label for this checkpoint (optional, max 255 chars)' },
+            description: { type: 'string', description: 'Longer description of why this checkpoint was made (optional, max 10000 chars)' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_list_diagram_versions',
+        description:
+          "List a diagram's version history (newest first). Thin shape — versionNumber, actorType, trigger, "
+          + 'label, description, createdAt, author, contentHash — NO content body (use haops_restore_diagram_version '
+          + 'to act on a version).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            limit: { type: 'number', description: 'Max versions to return (default 20, max 50)' },
+            offset: { type: 'number', description: 'Pagination offset (default 0)' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_restore_diagram_version',
+        description:
+          "Revert the diagram to an earlier version. Non-destructive: the diagram's current state is saved as a "
+          + 'new version FIRST, so the restore is itself reversible — you can always restore back to the state you '
+          + 'just restored over.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            versionId: { type: 'string', description: 'The DiagramVersion UUID to restore (from haops_list_diagram_versions)' },
+          },
+          required: ['projectSlug', 'diagramId', 'versionId'],
+        },
+      },
+      {
+        name: 'haops_link_diagram',
+        description:
+          'Bind (a.k.a "bind diagram to entity") a WHOLE diagram to a Module/Feature/Issue/DocSection/HelpArticle '
+          + 'for traceability — reference-not-binding (deleting either side never mutates the other). Fails with '
+          + '404 if the target does not exist in this project (HelpArticle is a global entity, not project-scoped, '
+          + 'so it only needs to exist), or 409 if this exact binding already exists. To remove a binding, use '
+          + 'haops_unbind_diagram.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            linkableType: {
+              type: 'string',
+              enum: ['Module', 'Feature', 'Issue', 'DocSection', 'HelpArticle'],
+              description: 'Type of the entity to bind to',
+            },
+            linkableId: { type: 'string', description: 'UUID of the target entity' },
+            role: { type: 'string', description: 'Optional short role label for this binding (max 50 chars)' },
+            context: { type: 'string', description: 'Optional free-text context for why this binding exists' },
+          },
+          required: ['projectSlug', 'diagramId', 'linkableType', 'linkableId'],
+        },
+      },
+      {
+        name: 'haops_list_diagram_links',
+        description:
+          "List a diagram's whole-diagram bindings (see haops_link_diagram), grouped by linkableType with resolved "
+          + 'display titles. Each row includes its own `id` — pass that as `linkId` to haops_unbind_diagram to '
+          + 'remove it.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_unbind_diagram',
+        description:
+          'Remove a whole-diagram binding created by haops_link_diagram (the "unbind" half of bind/unbind). Pass '
+          + 'either the binding\'s own `linkId` (from haops_list_diagram_links), or the `linkableType` + '
+          + '`linkableId` pair it was bound with — the tool looks up the matching link for you in that case. '
+          + '404 if no such binding exists. Reference-not-binding: only destroys the DiagramLink row, never the '
+          + 'bound entity.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            linkId: { type: 'string', description: 'The DiagramLink UUID to remove (from haops_list_diagram_links). Omit to resolve by linkableType+linkableId instead.' },
+            linkableType: {
+              type: 'string',
+              enum: ['Module', 'Feature', 'Issue', 'DocSection', 'HelpArticle'],
+              description: 'Used with linkableId to resolve the link when linkId is omitted.',
+            },
+            linkableId: { type: 'string', description: 'Used with linkableType to resolve the link when linkId is omitted.' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_add_diagram_element',
+        description:
+          'Add ONE node or edge to a diagram — convenience wrapper around haops_get_diagram + haops_update_diagram: '
+          + 'reads the current content, appends the element, writes it back with a freshly-read contentHash as the '
+          + 'precondition. On 409 stale, nothing is written — just retry this same call, it re-reads fresh state '
+          + 'every time. Building several elements at once? Use haops_batch_diagram_elements instead — one '
+          + 'read-modify-write instead of N round-trips (and N chances to collide with a concurrent writer). '
+          + 'Node: {id?, type?, position:{x,y} (required), data:{label, ...} (label required)}. `type` is a shape-'
+          + 'palette id (flowchart.process|decision|terminator|..., er.entity|relationship|..., uml.actor|usecase|'
+          + '..., system.service|server|database|..., layout.zone, or "generic"). Don\'t want to compute positions '
+          + 'yourself? Add elements with rough/zero positions, then call haops_auto_arrange_diagram once — it lays '
+          + 'everything out and persists it. Edge: {id?, source, target (existing node ids), type:"generic", '
+          + 'sourceHandle?, targetHandle? (format `${side}-source`/`${side}-target`, side∈top|right|bottom|left)}. '
+          + 'ids auto-generate if omitted.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            elementType: { type: 'string', enum: ['node', 'edge'], description: 'Whether to add a node or an edge' },
+            node: {
+              type: 'object',
+              description: 'Required when elementType is "node".',
+              properties: {
+                id: { type: 'string', description: 'Optional explicit node id (auto-generated if omitted)' },
+                type: { type: 'string', description: 'Shape-palette node type (default: "generic")' },
+                position: {
+                  type: 'object',
+                  properties: { x: { type: 'number' }, y: { type: 'number' } },
+                  description: 'Canvas position (required — pass {x:0,y:0} and run haops_auto_arrange_diagram afterward if you don\'t want to compute it)',
+                },
+                data: { type: 'object', description: 'Node data, e.g. {label: "..."} (required)' },
+              },
+            },
+            edge: {
+              type: 'object',
+              description: 'Required when elementType is "edge".',
+              properties: {
+                id: { type: 'string', description: 'Optional explicit edge id (auto-generated if omitted)' },
+                source: { type: 'string', description: 'Source node id (required)' },
+                target: { type: 'string', description: 'Target node id (required)' },
+                type: { type: 'string', description: 'Edge type (default: "generic")' },
+                data: { type: 'object', description: 'Edge data, e.g. {label: "..."} (optional)' },
+                sourceHandle: { type: 'string', description: 'Source handle id (optional)' },
+                targetHandle: { type: 'string', description: 'Target handle id (optional)' },
+              },
+            },
+          },
+          required: ['projectSlug', 'diagramId', 'elementType'],
+        },
+      },
+      {
+        name: 'haops_update_diagram_element',
+        description:
+          'Update ONE existing node or edge in a diagram by id — convenience wrapper: reads current content, '
+          + 'shallow-merges the given patch into the matching element (`data` is merged key-by-key, not replaced '
+          + 'wholesale), and writes back with the freshly-read contentHash as the precondition. Errors (no write) '
+          + "if elementId is not found. On a 409, nothing is written — retry the same call. Updating several "
+          + 'elements at once? Use haops_batch_diagram_elements instead.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            elementType: { type: 'string', enum: ['node', 'edge'], description: 'Whether elementId refers to a node or an edge' },
+            elementId: { type: 'string', description: 'The node or edge id to update' },
+            patch: {
+              type: 'object',
+              description:
+                'Fields to merge in. For a node: position, type, data (merged key-by-key). For an edge: source, '
+                + 'target, type, data (merged key-by-key), sourceHandle, targetHandle.',
+            },
+          },
+          required: ['projectSlug', 'diagramId', 'elementType', 'elementId', 'patch'],
+        },
+      },
+      {
+        name: 'haops_delete_diagram_element',
+        description:
+          'Delete ONE node or edge from a diagram by id — convenience wrapper: reads current content, removes the '
+          + 'matching element, writes back with the freshly-read contentHash as the precondition. Deleting a NODE '
+          + 'also removes every edge whose source or target references it (reports how many in the response) — no '
+          + 'dangling edges left behind. Errors (no write) if elementId is not found. On a 409, nothing is written '
+          + '— retry the same call. Deleting several elements at once? Use haops_batch_diagram_elements instead.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            elementType: { type: 'string', enum: ['node', 'edge'], description: 'Whether elementId refers to a node or an edge' },
+            elementId: { type: 'string', description: 'The node or edge id to delete' },
+          },
+          required: ['projectSlug', 'diagramId', 'elementType', 'elementId'],
+        },
+      },
+      {
+        name: 'haops_batch_diagram_elements',
+        description:
+          'Build or edit MANY nodes/edges in ONE call — the agent-ergonomic way to construct a diagram: reads the '
+          + 'current content ONCE, applies every add/update/remove operation in order, then writes back ONCE with '
+          + 'a single freshly-read contentHash precondition (one read-modify-write, not N — avoids N-1 unnecessary '
+          + 'round-trips and N-1 extra chances to collide with a concurrent writer). Prefer this over repeated '
+          + 'haops_add_diagram_element / haops_update_diagram_element / haops_delete_diagram_element calls whenever '
+          + "you're building more than one or two elements. Operations within one call CAN reference each other — "
+          + "e.g. add.edges may target an id from add.nodes in the same call (ids are resolved/assigned before "
+          + 'edges are appended). On 409 stale, nothing is written — just retry the same call. Add elements with '
+          + 'rough/zero positions and follow up with haops_auto_arrange_diagram if you don\'t want to compute '
+          + 'layout yourself.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            add: {
+              type: 'object',
+              description: 'Elements to append (optional).',
+              properties: {
+                nodes: {
+                  type: 'array',
+                  description: 'Each: {id?, type?, position:{x,y} (required), data:{label,...} (required)}. ids auto-generate if omitted.',
+                  items: { type: 'object' },
+                },
+                edges: {
+                  type: 'array',
+                  description: 'Each: {id?, source, target (required — may reference an id from add.nodes in this same call), type?, data?, sourceHandle?, targetHandle?}.',
+                  items: { type: 'object' },
+                },
+              },
+            },
+            update: {
+              type: 'array',
+              description: 'Elements to shallow-merge-patch (optional). Each: {elementType:"node"|"edge", elementId, patch}. `patch.data` merges key-by-key.',
+              items: {
+                type: 'object',
+                properties: {
+                  elementType: { type: 'string', enum: ['node', 'edge'] },
+                  elementId: { type: 'string' },
+                  patch: { type: 'object' },
+                },
+              },
+            },
+            remove: {
+              type: 'array',
+              description: 'Elements to delete (optional). Each: {elementType:"node"|"edge", elementId}. Removing a node also removes edges that reference it.',
+              items: {
+                type: 'object',
+                properties: {
+                  elementType: { type: 'string', enum: ['node', 'edge'] },
+                  elementId: { type: 'string' },
+                },
+              },
+            },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_auto_arrange_diagram',
+        description:
+          "Lay out a diagram's nodes automatically (dagre) and PERSIST the computed positions — so an agent never "
+          + 'has to compute x/y coordinates by hand. Reads the current content, runs a dagre layered layout over '
+          + 'the nodes/edges graph, writes the new node positions back with a freshly-read contentHash precondition '
+          + '(everything else — data, edges, groups — is unchanged). Good after haops_batch_diagram_elements adds a '
+          + 'batch of elements with placeholder positions, or any time a diagram\'s layout has gotten tangled. '
+          + 'Nodes NOT connected by any edge keep a stable relative order but are packed below the connected graph '
+          + '(dagre only lays out graph structure). No-op (returns immediately) for bpmn diagrams and diagrams with '
+          + 'fewer than 2 nodes. On 409 stale, nothing is written — retry the same call.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            direction: {
+              type: 'string',
+              enum: ['TB', 'BT', 'LR', 'RL'],
+              description: 'Layout flow direction (default: "TB" top-to-bottom). LR reads well for pipeline/sequence-style diagrams.',
+            },
+            nodeSpacing: { type: 'number', description: 'Horizontal gap between nodes on the same rank, in px (default 60).' },
+            rankSpacing: { type: 'number', description: 'Vertical gap between ranks, in px (default 100).' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_render_stored_diagram',
+        description:
+          "Render a SAVED diagram's actual visual to SVG or PNG on demand — so an agent can \"see\" a diagram "
+          + 'without a browser (e.g. before/after checking an edit, or handing a preview to a human). Fetches the '
+          + "SAME shape-rendering pipeline the app's canvas/thumbnail use, from the diagram's CURRENT content — "
+          + 'always fresh, not a cached thumbnail. Returns SVG as an inline string, or PNG as base64. 422s BPMN '
+          + 'diagrams and diagrams with no elements yet (add elements first). Unrelated to haops_validate_diagram / '
+          + 'haops_render_diagram-style tools elsewhere in HAOps, which render raw mermaid/d2/vega-lite/bpmn SOURCE '
+          + 'TEXT you supply — this tool renders a STORED Diagram Studio diagram by id.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID' },
+            format: { type: 'string', enum: ['svg', 'png'], description: 'Output format (default: "png").' },
+            scale: { type: 'number', description: 'PNG raster scale factor, 1-4 (default 2). Ignored for svg.' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_new_diagram_from_template',
+        description:
+          'Create a new diagram by deep-copying a TEMPLATE diagram (isTemplate:true — find one via '
+          + 'haops_list_diagrams with isTemplate:true) — an agent-ergonomic wrapper over the same clone operation '
+          + 'as haops_clone_diagram, with defaults suited to "start a fresh diagram from a starting point": the '
+          + "new diagram's title defaults to the template's OWN title (not \"Copy of ...\"), it is created with "
+          + 'isTemplate:false (a normal working diagram, not itself a template), and it starts with no bindings '
+          + "(the template's own bindings are never carried over). Errors if the source diagram's isTemplate flag "
+          + "is not true — pass sourceIsTemplateOverride:true to clone a non-template anyway (rare; prefer "
+          + 'haops_clone_diagram for that case).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'The template diagram UUID to start from' },
+            title: { type: 'string', description: 'Title for the new diagram (optional; defaults to the template\'s own title)' },
+            sourceIsTemplateOverride: { type: 'boolean', description: 'Set true to allow starting from a diagram whose isTemplate flag is false (rare).' },
+          },
+          required: ['projectSlug', 'diagramId'],
         },
       },
     ],
@@ -8881,6 +9500,615 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error calling discover: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Diagram Studio Tool Handlers (module d881186f) =====
+
+  if (name === 'haops_create_diagram') {
+    try {
+      const { projectSlug, title, diagramType, folderId, verbose } = args as {
+        projectSlug: string; title: string; diagramType?: string; folderId?: string; verbose?: boolean;
+      };
+      const body: Record<string, unknown> = { title };
+      if (diagramType !== undefined) body.diagramType = diagramType;
+      if (folderId !== undefined) body.folderId = folderId;
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/diagrams`, body);
+      return { content: [{ type: 'text', text: formatWriteResult('created', result as unknown as Record<string, unknown>, !!verbose) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error creating diagram: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_diagrams') {
+    try {
+      const {
+        projectSlug, search, type, status, authorId, updatedAfter, updatedBefore,
+        boundLinkableType, boundLinkableId, folderId, tag, isTemplate, sort,
+      } = args as {
+        projectSlug: string; search?: string; type?: string; status?: string; authorId?: string;
+        updatedAfter?: string; updatedBefore?: string; boundLinkableType?: string; boundLinkableId?: string;
+        folderId?: string; tag?: string; isTemplate?: boolean; sort?: string;
+      };
+      const qs = new URLSearchParams();
+      if (search !== undefined) qs.set('search', search);
+      if (type !== undefined) qs.set('type', type);
+      if (status !== undefined) qs.set('status', status);
+      if (authorId !== undefined) qs.set('authorId', authorId);
+      if (updatedAfter !== undefined) qs.set('updatedAfter', updatedAfter);
+      if (updatedBefore !== undefined) qs.set('updatedBefore', updatedBefore);
+      if (boundLinkableType !== undefined) qs.set('boundLinkableType', boundLinkableType);
+      if (boundLinkableId !== undefined) qs.set('boundLinkableId', boundLinkableId);
+      if (folderId !== undefined) qs.set('folderId', folderId);
+      if (tag !== undefined) qs.set('tag', tag);
+      if (isTemplate !== undefined) qs.set('isTemplate', String(isTemplate));
+      if (sort !== undefined) qs.set('sort', sort);
+      const queryString = qs.toString();
+      const url = `/api/projects/${projectSlug}/diagrams${queryString ? `?${queryString}` : ''}`;
+      const result = await apiClient.request('GET', url);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing diagrams: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_diagram') {
+    try {
+      const { projectSlug, diagramId } = args as { projectSlug: string; diagramId: string };
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/diagrams/${diagramId}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting diagram: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_update_diagram') {
+    try {
+      const { projectSlug, diagramId, skipPrecondition, verbose, ...rest } = args as {
+        projectSlug: string; diagramId: string; skipPrecondition?: boolean; verbose?: boolean; [key: string]: unknown;
+      };
+      const data: Record<string, unknown> = { ...rest };
+      if (data.content !== undefined && skipPrecondition !== true && data.baseContentHash === undefined) {
+        const current = (await apiClient.request('GET', `/api/projects/${projectSlug}/diagrams/${diagramId}`)) as { contentHash?: string };
+        if (current?.contentHash) data.baseContentHash = current.contentHash;
+      }
+      const result = await apiClient.request('PATCH', `/api/projects/${projectSlug}/diagrams/${diagramId}`, data);
+      return { content: [{ type: 'text', text: formatWriteResult('updated', result as unknown as Record<string, unknown>, !!verbose) }] };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return { content: [{ type: 'text', text: diagramStaleMessage('haops_update_diagram') + ' (Re-fetch via haops_get_diagram, reapply your change, then retry.)' }], isError: true };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error updating diagram: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_delete_diagram') {
+    try {
+      const { projectSlug, diagramId, verbose } = args as { projectSlug: string; diagramId: string; verbose?: boolean };
+      const result = (await apiClient.request('DELETE', `/api/projects/${projectSlug}/diagrams/${diagramId}`)) as Record<string, unknown>;
+      return { content: [{ type: 'text', text: formatWriteResult('deleted', { id: diagramId, ...result }, !!verbose) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error deleting diagram: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_clone_diagram') {
+    try {
+      const { projectSlug, diagramId, title, bindings, verbose } = args as {
+        projectSlug: string; diagramId: string; title?: string; bindings?: 'copy' | 'none'; verbose?: boolean;
+      };
+      const body: Record<string, unknown> = {};
+      if (title !== undefined) body.title = title;
+      if (bindings !== undefined) body.bindings = bindings;
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/diagrams/${diagramId}/clone`, body);
+      return { content: [{ type: 'text', text: formatWriteResult('cloned to', result as unknown as Record<string, unknown>, !!verbose) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error cloning diagram: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_set_bpmn_diagram_xml') {
+    try {
+      const { projectSlug, diagramId, bpmnXml, overwriteLayout, baseContentHash, skipPrecondition } = args as {
+        projectSlug: string; diagramId: string; bpmnXml: string; overwriteLayout?: boolean;
+        baseContentHash?: string; skipPrecondition?: boolean;
+      };
+
+      const current = await fetchDiagramForMutation(projectSlug, diagramId);
+
+      if (current.diagramType !== 'bpmn') {
+        return {
+          content: [{
+            type: 'text',
+            text: `Error setting BPMN XML: diagram ${diagramId} has diagramType "${current.diagramType ?? 'unknown'}", not "bpmn". Nothing was written. Create a bpmn diagram with haops_create_diagram (diagramType:"bpmn") first, or target the right diagram.`,
+          }],
+          isError: true,
+        };
+      }
+
+      const bpmnDiRe = /<(?:[A-Za-z0-9]+:)?BPMNDiagram[\s>]/;
+      const currentBpmnXml = current.content?.bpmnXml;
+      const targetHasDi = typeof currentBpmnXml === 'string' && bpmnDiRe.test(currentBpmnXml);
+      const incomingHasDi = bpmnDiRe.test(bpmnXml);
+      if (targetHasDi && !incomingHasDi && overwriteLayout !== true) {
+        return {
+          content: [{
+            type: 'text',
+            text:
+              'Error setting BPMN XML: the target diagram already carries diagram-interchange (DI) — a saved, '
+              + 'human/editor-authored layout (shape coordinates + edge waypoints). Your bpmnXml is semantics-only '
+              + '(no DI), so writing it would DISCARD that layout. Nothing was written. To preserve the layout, '
+              + 'fetch the current XML (haops_get_diagram -> content.bpmnXml), edit it in place keeping its '
+              + '<bpmndi:BPMNDiagram> DI, and set that back. To intentionally replace the laid-out diagram with '
+              + 'your semantics-only one, pass overwriteLayout:true.',
+          }],
+          isError: true,
+        };
+      }
+
+      const content: DiagramContentShape = {
+        nodes: [],
+        edges: [],
+        viewport: current.content?.viewport ?? { x: 0, y: 0, zoom: 1 },
+        bpmnXml,
+      };
+
+      const hashToSend = skipPrecondition === true ? undefined : (baseContentHash ?? current.contentHash);
+      const result = await writeDiagramContent(projectSlug, diagramId, content, hashToSend);
+      return { content: [{ type: 'text', text: formatWriteResult('set BPMN XML for', result as unknown as Record<string, unknown>, false) }] };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return {
+          content: [{
+            type: 'text',
+            text:
+              'Error setting BPMN XML: stale — the diagram changed between the read and the write (someone else '
+              + 'saved in the meantime). Nothing was written. Just retry haops_set_bpmn_diagram_xml — it re-reads '
+              + 'the current content each time.',
+          }],
+          isError: true,
+        };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error setting BPMN XML: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_create_diagram_version') {
+    try {
+      const { projectSlug, diagramId, label, description, verbose } = args as {
+        projectSlug: string; diagramId: string; label?: string; description?: string; verbose?: boolean;
+      };
+      const body: Record<string, unknown> = {};
+      if (label !== undefined) body.label = label;
+      if (description !== undefined) body.description = description;
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/diagrams/${diagramId}/versions`, body);
+      return { content: [{ type: 'text', text: formatWriteResult('created version for', result as unknown as Record<string, unknown>, !!verbose) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error creating diagram version: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_diagram_versions') {
+    try {
+      const { projectSlug, diagramId, limit, offset } = args as {
+        projectSlug: string; diagramId: string; limit?: number; offset?: number;
+      };
+      const qs = new URLSearchParams();
+      if (limit !== undefined) qs.set('limit', String(limit));
+      if (offset !== undefined) qs.set('offset', String(offset));
+      const queryString = qs.toString();
+      const url = `/api/projects/${projectSlug}/diagrams/${diagramId}/versions${queryString ? `?${queryString}` : ''}`;
+      const result = await apiClient.request('GET', url);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing diagram versions: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_restore_diagram_version') {
+    try {
+      const { projectSlug, diagramId, versionId } = args as {
+        projectSlug: string; diagramId: string; versionId: string;
+      };
+      const result = await apiClient.request(
+        'POST',
+        `/api/projects/${projectSlug}/diagrams/${diagramId}/versions/${versionId}/restore`,
+      );
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error restoring diagram version: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_link_diagram') {
+    try {
+      const { projectSlug, diagramId, linkableType, linkableId, role, context, verbose } = args as {
+        projectSlug: string; diagramId: string; linkableType: string; linkableId: string;
+        role?: string; context?: string; verbose?: boolean;
+      };
+      const body: Record<string, unknown> = { linkableType, linkableId };
+      if (role !== undefined) body.role = role;
+      if (context !== undefined) body.context = context;
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/diagrams/${diagramId}/links`, body);
+      return { content: [{ type: 'text', text: formatWriteResult('bound', result as unknown as Record<string, unknown>, !!verbose) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error linking diagram: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_diagram_links') {
+    try {
+      const { projectSlug, diagramId } = args as { projectSlug: string; diagramId: string };
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/diagrams/${diagramId}/links`);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing diagram links: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_unbind_diagram') {
+    try {
+      const { projectSlug, diagramId, linkId, linkableType, linkableId } = args as {
+        projectSlug: string; diagramId: string; linkId?: string; linkableType?: string; linkableId?: string;
+      };
+
+      let resolvedLinkId = linkId;
+      if (!resolvedLinkId) {
+        if (!linkableType || !linkableId) {
+          return {
+            content: [{ type: 'text', text: 'Error unbinding diagram: pass either linkId, or both linkableType and linkableId to resolve it.' }],
+            isError: true,
+          };
+        }
+        const links = (await apiClient.request('GET', `/api/projects/${projectSlug}/diagrams/${diagramId}/links`)) as {
+          data?: Array<{ id: string; linkableType: string; linkableId: string }>;
+        };
+        const match = (links.data ?? []).find((l) => l.linkableType === linkableType && l.linkableId === linkableId);
+        if (!match) {
+          return {
+            content: [{ type: 'text', text: `Error unbinding diagram: no binding to ${linkableType}:${linkableId} found on this diagram.` }],
+            isError: true,
+          };
+        }
+        resolvedLinkId = match.id;
+      }
+
+      const result = await apiClient.request('DELETE', `/api/projects/${projectSlug}/diagrams/${diagramId}/links/${resolvedLinkId}`);
+      return { content: [{ type: 'text', text: formatWriteResult('unbound', { id: resolvedLinkId, ...(result as Record<string, unknown>) }, false) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error unbinding diagram: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_add_diagram_element') {
+    try {
+      const { projectSlug, diagramId, elementType, node, edge } = args as {
+        projectSlug: string; diagramId: string; elementType: 'node' | 'edge';
+        node?: { id?: string; type?: string; position?: { x: number; y: number }; data?: Record<string, unknown> };
+        edge?: { id?: string; source?: string; target?: string; type?: string; data?: Record<string, unknown>; sourceHandle?: string; targetHandle?: string };
+      };
+
+      const current = await fetchDiagramForMutation(projectSlug, diagramId);
+      const content = current.content;
+      let newId: string;
+
+      if (elementType === 'node') {
+        if (!node?.position) {
+          return { content: [{ type: 'text', text: 'Error adding diagram element: node.position {x, y} is required.' }], isError: true };
+        }
+        newId = node.id ?? randomElementId('node');
+        content.nodes = [...content.nodes, { id: newId, type: node.type ?? 'generic', position: node.position, data: node.data ?? { label: '' } }];
+      } else if (elementType === 'edge') {
+        if (!edge?.source || !edge?.target) {
+          return { content: [{ type: 'text', text: 'Error adding diagram element: edge.source and edge.target are required.' }], isError: true };
+        }
+        newId = edge.id ?? randomElementId('edge');
+        const newEdge: Record<string, unknown> = { id: newId, source: edge.source, target: edge.target, type: edge.type ?? 'generic' };
+        if (edge.data !== undefined) newEdge.data = edge.data;
+        if (edge.sourceHandle !== undefined) newEdge.sourceHandle = edge.sourceHandle;
+        if (edge.targetHandle !== undefined) newEdge.targetHandle = edge.targetHandle;
+        content.edges = [...content.edges, newEdge];
+      } else {
+        return { content: [{ type: 'text', text: `Error adding diagram element: unknown elementType "${elementType}" (must be "node" or "edge").` }], isError: true };
+      }
+
+      const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
+      return { content: [{ type: 'text', text: JSON.stringify({ addedId: newId, diagram: result }) }] };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return { content: [{ type: 'text', text: diagramStaleMessage('haops_add_diagram_element') }], isError: true };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error adding diagram element: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_update_diagram_element') {
+    try {
+      const { projectSlug, diagramId, elementType, elementId, patch } = args as {
+        projectSlug: string; diagramId: string; elementType: 'node' | 'edge'; elementId: string; patch: Record<string, unknown>;
+      };
+
+      const current = await fetchDiagramForMutation(projectSlug, diagramId);
+      const content = current.content;
+      const collection = elementType === 'node' ? content.nodes : elementType === 'edge' ? content.edges : undefined;
+      if (!collection) {
+        return { content: [{ type: 'text', text: `Error updating diagram element: unknown elementType "${elementType}" (must be "node" or "edge").` }], isError: true };
+      }
+
+      const index = collection.findIndex((el) => el.id === elementId);
+      if (index === -1) {
+        return {
+          content: [{ type: 'text', text: `Error updating diagram element: no ${elementType} with id "${elementId}" found in the diagram's current content. Nothing was written.` }],
+          isError: true,
+        };
+      }
+
+      const existing = collection[index];
+      const { data: patchData, ...restPatch } = patch as { data?: Record<string, unknown>; [key: string]: unknown };
+      const merged: Record<string, unknown> = { ...existing, ...restPatch };
+      if (patchData !== undefined) {
+        merged.data = { ...(existing.data as Record<string, unknown> | undefined), ...patchData };
+      }
+      collection[index] = merged;
+
+      const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return { content: [{ type: 'text', text: diagramStaleMessage('haops_update_diagram_element') }], isError: true };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error updating diagram element: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_delete_diagram_element') {
+    try {
+      const { projectSlug, diagramId, elementType, elementId } = args as {
+        projectSlug: string; diagramId: string; elementType: 'node' | 'edge'; elementId: string;
+      };
+
+      const current = await fetchDiagramForMutation(projectSlug, diagramId);
+      const content = current.content;
+
+      if (elementType === 'node') {
+        const exists = content.nodes.some((n) => n.id === elementId);
+        if (!exists) {
+          return {
+            content: [{ type: 'text', text: `Error deleting diagram element: no node with id "${elementId}" found in the diagram's current content. Nothing was written.` }],
+            isError: true,
+          };
+        }
+        content.nodes = content.nodes.filter((n) => n.id !== elementId);
+        const beforeEdgeCount = content.edges.length;
+        content.edges = content.edges.filter((e) => e.source !== elementId && e.target !== elementId);
+        const removedEdgeCount = beforeEdgeCount - content.edges.length;
+        const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
+        return { content: [{ type: 'text', text: JSON.stringify({ deletedId: elementId, cascadedEdgesRemoved: removedEdgeCount, diagram: result }) }] };
+      } else if (elementType === 'edge') {
+        const exists = content.edges.some((e) => e.id === elementId);
+        if (!exists) {
+          return {
+            content: [{ type: 'text', text: `Error deleting diagram element: no edge with id "${elementId}" found in the diagram's current content. Nothing was written.` }],
+            isError: true,
+          };
+        }
+        content.edges = content.edges.filter((e) => e.id !== elementId);
+        const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
+        return { content: [{ type: 'text', text: JSON.stringify({ deletedId: elementId, cascadedEdgesRemoved: 0, diagram: result }) }] };
+      }
+      return { content: [{ type: 'text', text: `Error deleting diagram element: unknown elementType "${elementType}" (must be "node" or "edge").` }], isError: true };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return { content: [{ type: 'text', text: diagramStaleMessage('haops_delete_diagram_element') }], isError: true };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error deleting diagram element: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_batch_diagram_elements') {
+    try {
+      const { projectSlug, diagramId, add, update, remove } = args as {
+        projectSlug: string; diagramId: string;
+        add?: { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>> };
+        update?: Array<{ elementType: 'node' | 'edge'; elementId: string; patch: Record<string, unknown> }>;
+        remove?: Array<{ elementType: 'node' | 'edge'; elementId: string }>;
+      };
+
+      const current = await fetchDiagramForMutation(projectSlug, diagramId);
+      const content = current.content;
+      const addedIds: string[] = [];
+      const errors: string[] = [];
+
+      // 1) Add — nodes first (so same-call edges can reference their ids), then edges.
+      for (const rawNode of add?.nodes ?? []) {
+        const position = rawNode.position as { x: number; y: number } | undefined;
+        if (!position) {
+          errors.push(`add.nodes: skipped an entry missing required position {x,y} (data: ${JSON.stringify(rawNode.data ?? {})})`);
+          continue;
+        }
+        const id = (rawNode.id as string | undefined) ?? randomElementId('node');
+        content.nodes = [...content.nodes, { id, type: (rawNode.type as string | undefined) ?? 'generic', position, data: rawNode.data ?? { label: '' } }];
+        addedIds.push(id);
+      }
+      for (const rawEdge of add?.edges ?? []) {
+        const source = rawEdge.source as string | undefined;
+        const target = rawEdge.target as string | undefined;
+        if (!source || !target) {
+          errors.push('add.edges: skipped an entry missing required source/target');
+          continue;
+        }
+        const id = (rawEdge.id as string | undefined) ?? randomElementId('edge');
+        const newEdge: Record<string, unknown> = { id, source, target, type: (rawEdge.type as string | undefined) ?? 'generic' };
+        if (rawEdge.data !== undefined) newEdge.data = rawEdge.data;
+        if (rawEdge.sourceHandle !== undefined) newEdge.sourceHandle = rawEdge.sourceHandle;
+        if (rawEdge.targetHandle !== undefined) newEdge.targetHandle = rawEdge.targetHandle;
+        content.edges = [...content.edges, newEdge];
+        addedIds.push(id);
+      }
+
+      // 2) Update — shallow-merge patch, `data` merged key-by-key (same semantics as haops_update_diagram_element).
+      for (const op of update ?? []) {
+        const collection = op.elementType === 'node' ? content.nodes : content.edges;
+        const index = collection.findIndex((el) => el.id === op.elementId);
+        if (index === -1) {
+          errors.push(`update: no ${op.elementType} with id "${op.elementId}" found — skipped`);
+          continue;
+        }
+        const existing = collection[index];
+        const { data: patchData, ...restPatch } = op.patch as { data?: Record<string, unknown>; [key: string]: unknown };
+        const merged: Record<string, unknown> = { ...existing, ...restPatch };
+        if (patchData !== undefined) merged.data = { ...(existing.data as Record<string, unknown> | undefined), ...patchData };
+        collection[index] = merged;
+      }
+
+      // 3) Remove — nodes cascade-remove their edges, same as haops_delete_diagram_element.
+      let cascadedEdgesRemoved = 0;
+      for (const op of remove ?? []) {
+        if (op.elementType === 'node') {
+          const before = content.nodes.length;
+          content.nodes = content.nodes.filter((n) => n.id !== op.elementId);
+          if (content.nodes.length === before) {
+            errors.push(`remove: no node with id "${op.elementId}" found — skipped`);
+            continue;
+          }
+          const beforeEdges = content.edges.length;
+          content.edges = content.edges.filter((e) => e.source !== op.elementId && e.target !== op.elementId);
+          cascadedEdgesRemoved += beforeEdges - content.edges.length;
+        } else {
+          const before = content.edges.length;
+          content.edges = content.edges.filter((e) => e.id !== op.elementId);
+          if (content.edges.length === before) {
+            errors.push(`remove: no edge with id "${op.elementId}" found — skipped`);
+          }
+        }
+      }
+
+      const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
+      return { content: [{ type: 'text', text: JSON.stringify({ addedIds, cascadedEdgesRemoved, warnings: errors, diagram: result }) }] };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return { content: [{ type: 'text', text: diagramStaleMessage('haops_batch_diagram_elements') }], isError: true };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error batch-editing diagram elements: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_auto_arrange_diagram') {
+    try {
+      const { projectSlug, diagramId, direction, nodeSpacing, rankSpacing } = args as {
+        projectSlug: string; diagramId: string; direction?: 'TB' | 'BT' | 'LR' | 'RL'; nodeSpacing?: number; rankSpacing?: number;
+      };
+
+      const current = await fetchDiagramForMutation(projectSlug, diagramId);
+      const content = current.content;
+
+      if (current.diagramType === 'bpmn' || content.nodes.length < 2) {
+        return {
+          content: [{
+            type: 'text',
+            text: `No-op: ${current.diagramType === 'bpmn' ? 'bpmn diagrams are not laid out by this tool' : 'fewer than 2 nodes — nothing to arrange'}. Nothing was written.`,
+          }],
+        };
+      }
+
+      const g = new dagre.graphlib.Graph();
+      g.setGraph({ rankdir: direction ?? 'TB', nodesep: nodeSpacing ?? 60, ranksep: rankSpacing ?? 100 });
+      g.setDefaultEdgeLabel(() => ({}));
+
+      for (const node of content.nodes) {
+        const style = node.style as { width?: number; height?: number } | undefined;
+        g.setNode(node.id as string, { width: style?.width ?? 160, height: style?.height ?? 60 });
+      }
+      const nodeIds = new Set(content.nodes.map((n) => n.id as string));
+      for (const edge of content.edges) {
+        const source = edge.source as string;
+        const target = edge.target as string;
+        if (nodeIds.has(source) && nodeIds.has(target)) g.setEdge(source, target);
+      }
+
+      dagre.layout(g);
+
+      content.nodes = content.nodes.map((node) => {
+        const laidOut = g.node(node.id as string) as { x: number; y: number; width: number; height: number } | undefined;
+        if (!laidOut) return node;
+        // dagre positions are node CENTERS — convert to the top-left corner
+        // convention this app's ReactFlow node.position uses.
+        return { ...node, position: { x: laidOut.x - laidOut.width / 2, y: laidOut.y - laidOut.height / 2 } };
+      });
+
+      const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
+      return { content: [{ type: 'text', text: formatWriteResult('auto-arranged', result as unknown as Record<string, unknown>, false) }] };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return { content: [{ type: 'text', text: diagramStaleMessage('haops_auto_arrange_diagram') }], isError: true };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error auto-arranging diagram: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_render_stored_diagram') {
+    try {
+      const { projectSlug, diagramId, format, scale } = args as {
+        projectSlug: string; diagramId: string; format?: 'svg' | 'png'; scale?: number;
+      };
+      const qs = new URLSearchParams();
+      qs.set('format', format ?? 'png');
+      if (scale !== undefined) qs.set('scale', String(scale));
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/diagrams/${diagramId}/render?${qs.toString()}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error rendering diagram: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_new_diagram_from_template') {
+    try {
+      const { projectSlug, diagramId, title, sourceIsTemplateOverride } = args as {
+        projectSlug: string; diagramId: string; title?: string; sourceIsTemplateOverride?: boolean;
+      };
+
+      const source = (await apiClient.request('GET', `/api/projects/${projectSlug}/diagrams/${diagramId}`)) as {
+        title: string; isTemplate?: boolean;
+      };
+
+      if (source.isTemplate !== true && sourceIsTemplateOverride !== true) {
+        return {
+          content: [{
+            type: 'text',
+            text:
+              `Error: diagram ${diagramId} ("${source.title}") is not marked isTemplate:true. Use `
+              + 'haops_list_diagrams with isTemplate:true to find a template, or pass sourceIsTemplateOverride:true '
+              + 'to start from a non-template diagram anyway (prefer haops_clone_diagram for that case).',
+          }],
+          isError: true,
+        };
+      }
+
+      const body: Record<string, unknown> = { title: title ?? source.title, bindings: 'none' };
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/diagrams/${diagramId}/clone`, body);
+      return { content: [{ type: 'text', text: formatWriteResult('created from template', result as unknown as Record<string, unknown>, false) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error creating diagram from template: ${message}` }], isError: true };
     }
   }
 
