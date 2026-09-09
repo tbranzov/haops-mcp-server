@@ -149,6 +149,241 @@ function randomElementId(prefix: 'node' | 'edge' | 'grp'): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// ===== Database Diagram helpers (module d881186f, F3 issue de31fc5f) =====
+// Framework-free port of the haops app's lib/utils/diagrams/databaseNodeData.ts
+// + databaseColumnEditor.ts — the `database.table` node / FK-edge `data` shape
+// and the planned-layer column-editing primitives (createEmptyColumn,
+// setColumnChangeKind, createPlannedNewTableData, createPlannedOverlayData).
+// Ported here (rather than imported) because this is a separate repo/package
+// from the haops app. Keep in sync with that file if the shape ever changes —
+// see ADR: Database Explorer -> Diagram Studio (2026-09-09).
+
+type DbColumnChangeKind = 'add-column' | 'modify-column' | 'drop-column';
+type DbRelationshipCardinality = '1:1' | '1:N' | 'N:M';
+
+interface DbColumnData {
+  name: string;
+  dataType: string;
+  maxLength: number | null;
+  nullable: boolean;
+  isPrimaryKey: boolean;
+  isForeignKey: boolean;
+  isUnique: boolean;
+  defaultValue: string | null;
+  changeKind?: DbColumnChangeKind;
+  previousDataType?: string;
+  previousMaxLength?: number | null;
+  previousNullable?: boolean;
+  previousDefaultValue?: string | null;
+}
+
+/** Fills in the same defaults the app's createEmptyColumn() uses for any field the caller omitted — for a BRAND NEW column. */
+function normalizeDbColumn(raw: Record<string, unknown>): DbColumnData {
+  return {
+    name: typeof raw.name === 'string' ? raw.name : '',
+    dataType: typeof raw.dataType === 'string' ? raw.dataType : 'text',
+    maxLength: (raw.maxLength as number | null | undefined) ?? null,
+    nullable: raw.nullable !== false,
+    isPrimaryKey: raw.isPrimaryKey === true,
+    isForeignKey: raw.isForeignKey === true,
+    isUnique: raw.isUnique === true,
+    defaultValue: (raw.defaultValue as string | null | undefined) ?? null,
+  };
+}
+
+/** Only the fields the caller actually supplied — for PATCHING an existing column (undefined means "leave as-is"). */
+function normalizePartialDbColumn(raw: Record<string, unknown>): Partial<DbColumnData> {
+  const patch: Partial<DbColumnData> = {};
+  if (typeof raw.name === 'string') patch.name = raw.name;
+  if (typeof raw.dataType === 'string') patch.dataType = raw.dataType;
+  if (raw.maxLength !== undefined) patch.maxLength = raw.maxLength as number | null;
+  if (raw.nullable !== undefined) patch.nullable = raw.nullable as boolean;
+  if (raw.isPrimaryKey !== undefined) patch.isPrimaryKey = raw.isPrimaryKey as boolean;
+  if (raw.isForeignKey !== undefined) patch.isForeignKey = raw.isForeignKey as boolean;
+  if (raw.isUnique !== undefined) patch.isUnique = raw.isUnique as boolean;
+  if (raw.defaultValue !== undefined) patch.defaultValue = raw.defaultValue as string | null;
+  return patch;
+}
+
+/** Strips the `previous*` bookkeeping fields (mirrors the app's withoutPrevious()). */
+function withoutPreviousColumnFields(column: DbColumnData): DbColumnData {
+  const rest = { ...column };
+  delete rest.previousDataType;
+  delete rest.previousMaxLength;
+  delete rest.previousNullable;
+  delete rest.previousDefaultValue;
+  return rest;
+}
+
+/** Strips BOTH `changeKind` and the `previous*` fields — "unchanged/context" state (mirrors the app's withoutChangeKind()). */
+function withoutColumnChangeKind(column: DbColumnData): DbColumnData {
+  const rest = withoutPreviousColumnFields(column);
+  delete rest.changeKind;
+  return rest;
+}
+
+/** Mirrors the app's setColumnChangeKind() — snapshots the column's CURRENT values into previous* when tagging 'modify-column'. */
+function setDbColumnChangeKind(column: DbColumnData, kind: DbColumnChangeKind | undefined): DbColumnData {
+  if (kind === undefined) return withoutColumnChangeKind(column);
+  if (kind === 'modify-column') {
+    return {
+      ...column,
+      changeKind: 'modify-column',
+      previousDataType: column.dataType,
+      previousMaxLength: column.maxLength,
+      previousNullable: column.nullable,
+      previousDefaultValue: column.defaultValue,
+    };
+  }
+  return { ...withoutPreviousColumnFields(column), changeKind: kind };
+}
+
+/** Data for a brand-new PLANNED table (mirrors the app's createPlannedNewTableData()). */
+function buildPlannedTableNodeData(label: string, columns: DbColumnData[]): Record<string, unknown> {
+  return { label, columns, layer: 'planned', provenance: 'authored', changeKind: 'new-table' };
+}
+
+/** Data for a PLANNED OVERLAY node proposing changes to an existing deployed table (mirrors createPlannedOverlayData()). */
+function buildPlannedOverlayNodeData(deployedData: Record<string, unknown>): Record<string, unknown> {
+  const label = typeof deployedData.label === 'string' ? deployedData.label : '';
+  const rawColumns = (deployedData.columns as Array<Record<string, unknown>> | undefined) ?? [];
+  const columns = rawColumns.map((c) => withoutColumnChangeKind(normalizeDbColumn(c)));
+  return { label: `${label} (planned changes)`, targetTableName: label, layer: 'planned', provenance: 'authored', columns };
+}
+
+/** Applies a batch of column changes (add-column/modify-column/drop-column) to an overlay's columns[], collecting non-fatal warnings for skipped entries. */
+function applyColumnChanges(
+  columns: DbColumnData[],
+  changes: Array<{ changeKind: DbColumnChangeKind; columnName?: string; column?: Record<string, unknown> }>,
+): { columns: DbColumnData[]; warnings: string[] } {
+  const result = [...columns];
+  const warnings: string[] = [];
+  for (const change of changes) {
+    if (change.changeKind === 'add-column') {
+      if (!change.column || typeof change.column.name !== 'string' || !change.column.name) {
+        warnings.push('add-column: skipped an entry missing required column.name');
+        continue;
+      }
+      result.push(setDbColumnChangeKind(normalizeDbColumn(change.column), 'add-column'));
+      continue;
+    }
+    if (!change.columnName) {
+      warnings.push(`${change.changeKind}: skipped an entry missing required columnName`);
+      continue;
+    }
+    const index = result.findIndex((c) => c.name === change.columnName);
+    if (index === -1) {
+      warnings.push(`${change.changeKind}: no column named "${change.columnName}" found on the overlay — skipped`);
+      continue;
+    }
+    if (change.changeKind === 'drop-column') {
+      result[index] = setDbColumnChangeKind(result[index], 'drop-column');
+    } else {
+      // modify-column: snapshot the column's CURRENT (pre-patch) values as previous*, then apply the patch.
+      const original = result[index];
+      const patch = normalizePartialDbColumn(change.column ?? {});
+      result[index] = {
+        ...original,
+        ...patch,
+        changeKind: 'modify-column',
+        previousDataType: original.dataType,
+        previousMaxLength: original.maxLength,
+        previousNullable: original.nullable,
+        previousDefaultValue: original.defaultValue,
+      };
+    }
+  }
+  return { columns: result, warnings };
+}
+
+/** ReactFlow node id for a deployed table — stable across Sync re-runs, mirrors the app's deployedTableNodeId(). */
+function deployedTableNodeId(tableName: string): string {
+  return `db_table_${tableName}`;
+}
+
+/** Fresh node id for a new planned table/overlay, mirrors the app's plannedTableNodeId(). */
+function plannedTableNodeId(tableName: string): string {
+  return `db_table_plan_${tableName}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/** Finds the layer:'deployed' database.table node for `tableName`, by stable id first, falling back to a label match. */
+function findDeployedTableNode(
+  nodes: Array<Record<string, unknown>>,
+  tableName: string,
+): Record<string, unknown> | undefined {
+  const byId = nodes.find((n) => n.id === deployedTableNodeId(tableName));
+  if (byId) return byId;
+  return nodes.find((n) => {
+    const data = n.data as Record<string, unknown> | undefined;
+    return data?.layer === 'deployed' && data?.label === tableName;
+  });
+}
+
+/** Finds the existing layer:'planned' overlay node targeting `tableName` (data.targetTableName), if any. */
+function findPlannedOverlayNode(
+  nodes: Array<Record<string, unknown>>,
+  tableName: string,
+): Record<string, unknown> | undefined {
+  return nodes.find((n) => {
+    const data = n.data as Record<string, unknown> | undefined;
+    return data?.layer === 'planned' && data?.targetTableName === tableName;
+  });
+}
+
+/** Nudge a new overlay a little away from the deployed node it targets so the two don't stack exactly on top of each other. */
+function offsetPosition(pos: { x: number; y: number } | undefined): { x: number; y: number } {
+  return pos ? { x: pos.x + 40, y: pos.y + 40 } : { x: 0, y: 0 };
+}
+
+/** Resolves an addEdges source/target: a literal existing node id, or a table name (incl. one added earlier in the same batch call). */
+function resolveTableRef(
+  ref: string,
+  nodes: Array<Record<string, unknown>>,
+  nameToId: Map<string, string>,
+): string | undefined {
+  if (nodes.some((n) => n.id === ref)) return ref;
+  return nameToId.get(ref);
+}
+
+/** Builds a planned FK-relationship edge (generic edge type, DatabaseEdgeData-shaped `data`). */
+function buildPlannedFkEdge(params: {
+  id: string;
+  source: string;
+  target: string;
+  sourceColumn: string;
+  targetColumn: string;
+  cardinality?: DbRelationshipCardinality;
+  changeKind?: 'new-fk' | 'drop-fk';
+}): Record<string, unknown> {
+  const data: Record<string, unknown> = {
+    cardinality: params.cardinality ?? '1:N',
+    sourceColumn: params.sourceColumn,
+    targetColumn: params.targetColumn,
+    layer: 'planned',
+    provenance: 'authored',
+    label: `${params.sourceColumn} → ${params.targetColumn}`,
+  };
+  if (params.changeKind !== undefined) data.changeKind = params.changeKind;
+  return { id: params.id, source: params.source, target: params.target, type: 'generic', data };
+}
+
+/** Guard shared by every database-diagram tool: refuses (nothing written) when the target diagram isn't diagramType:"database". */
+function requireDatabaseDiagram(
+  current: DiagramWithContent,
+  toolName: string,
+): { content: Array<{ type: string; text: string }>; isError: true } | undefined {
+  if (current.diagramType !== 'database') {
+    return {
+      content: [{
+        type: 'text',
+        text: `Error: diagram ${current.id} has diagramType "${current.diagramType ?? 'unknown'}", not "database". ${toolName} only operates on database diagrams. Nothing was written.`,
+      }],
+      isError: true,
+    };
+  }
+  return undefined;
+}
+
 /**
  * Strict RFC 4122 v1–v5 UUID form (version nibble 1–5, variant nibble 8/9/a/b),
  * case-insensitive. The nil UUID is intentionally rejected — HAOps never mints
@@ -4099,25 +4334,39 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           'Create a new Diagram Studio diagram — a first-class project artifact (own identity): authored '
           + 'nodes/edges/viewport DATA, not a rendered image. Starts empty; use haops_add_diagram_element / '
           + 'haops_batch_diagram_elements / haops_update_diagram to populate it. Unrelated to '
-          + 'haops_render_stored_diagram, which renders this SAVED diagram to SVG/PNG for viewing.',
+          + 'haops_render_stored_diagram, which renders this SAVED diagram to SVG/PNG for viewing. '
+          + 'diagramType:"database" is special: pass `databaseId` (a ProjectDatabase UUID) to introspect that '
+          + 'live connection ONCE and create the diagram already populated with its deployed-layer schema (title '
+          + 'defaults to the connection\'s own name when omitted; folderId is NOT supported on this path — use '
+          + 'haops_update_diagram(folderId:...) afterward if you want it filed). Omit databaseId for an empty '
+          + '"database" diagram with no source connection (author its planning layer from scratch via '
+          + 'haops_plan_table).',
         inputSchema: {
           type: 'object',
           properties: {
             projectSlug: { type: 'string', description: 'The project slug' },
-            title: { type: 'string', description: 'Diagram title' },
+            title: { type: 'string', description: 'Diagram title (required unless diagramType:"database" with databaseId is supplied — then defaults to the connection\'s own name)' },
             diagramType: {
               type: 'string',
-              enum: ['flowchart', 'bpmn', 'er', 'uml_usecase', 'uml_sequence', 'system', 'freeform'],
+              enum: ['flowchart', 'bpmn', 'er', 'uml_usecase', 'uml_sequence', 'system', 'database', 'freeform'],
               description:
                 'Diagram type (default: freeform). All types except bpmn use the interactive {nodes, edges, '
                 + 'viewport} shape (see haops_update_diagram) with type-appropriate node `type` values (e.g. '
                 + 'flowchart.process|decision|terminator, er.entity|relationship, uml.actor|usecase, '
-                + 'system.service|server|database, layout.zone, or "generic"). bpmn is the exception: it stores '
+                + 'system.service|server|database, database.table (see haops_plan_table / haops_plan_change / '
+                + 'haops_introspect_database), layout.zone, or "generic"). bpmn is the exception: it stores '
                 + 'BPMN 2.0 XML at content.bpmnXml — after creating, call haops_set_bpmn_diagram_xml to populate it.',
             },
-            folderId: { type: 'string', description: 'DiagramFolder UUID to file this diagram under (optional; default: unfiled)' },
+            databaseId: {
+              type: 'string',
+              description:
+                'diagramType:"database" only — a ProjectDatabase UUID to introspect and populate the new diagram '
+                + 'from (posts to the databases/[id]/diagram route instead of the generic create route). Omit for '
+                + 'an empty database diagram with no source connection.',
+            },
+            folderId: { type: 'string', description: 'DiagramFolder UUID to file this diagram under (optional; default: unfiled). Ignored when databaseId is supplied — see the diagramType:"database" note above.' },
           },
-          required: ['projectSlug', 'title'],
+          required: ['projectSlug'],
         },
       },
       {
@@ -4134,7 +4383,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             search: { type: 'string', description: 'Title substring filter (case-insensitive)' },
             type: {
               type: 'string',
-              enum: ['flowchart', 'bpmn', 'er', 'uml_usecase', 'uml_sequence', 'system', 'freeform'],
+              enum: ['flowchart', 'bpmn', 'er', 'uml_usecase', 'uml_sequence', 'system', 'database', 'freeform'],
               description: 'Exact diagramType match',
             },
             status: { type: 'string', enum: ['draft', 'ready', 'archived'], description: 'Exact status match' },
@@ -4641,6 +4890,292 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             diagramId: { type: 'string', description: 'The template diagram UUID to start from' },
             title: { type: 'string', description: 'Title for the new diagram (optional; defaults to the template\'s own title)' },
             sourceIsTemplateOverride: { type: 'boolean', description: 'Set true to allow starting from a diagram whose isTemplate flag is false (rare).' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+
+      // ===== Database Explorer -> Diagram Studio: DB MCP toolset (module d881186f, feature e4448315 / F3) =====
+      // Thin HTTP wrappers over the F1+F2 haops routes (ADR: Database Explorer
+      // -> Diagram Studio — unified `database` diagramType + planning layer).
+      // introspect/sample are read tools over a ProjectDatabase connection;
+      // get_schema_diff/sync_database_diagram are the "understand"/"make-sync"
+      // tools over a `database`-type diagram; plan_table/plan_change/
+      // batch_database_elements author the diagram's PLANNED layer (never the
+      // deployed layer — that only ever comes from introspection/sync). The
+      // generic Diagram Studio tools above (haops_get_diagram,
+      // haops_batch_diagram_elements, haops_auto_arrange_diagram, ...) work
+      // as-is for `database`-type diagrams too.
+      {
+        name: 'haops_introspect_database',
+        description:
+          'Introspect a project\'s stored database connection (ProjectDatabase) live via information_schema — '
+          + 'the READ tool of the DB Explorer toolset. Returns the full DBSchema (tables, columns, relationships) '
+          + 'fresh from the live database; does NOT touch any diagram. Use haops_get_schema_diff to compare a '
+          + 'diagram\'s planned layer against what is actually deployed, or haops_sync_database_diagram to refresh '
+          + 'a diagram\'s deployed layer from this same live introspection.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            databaseId: { type: 'string', description: 'ProjectDatabase UUID (the stored connection) to introspect' },
+            includeRowCounts: { type: 'boolean', description: 'Include a live COUNT(*) per table (slower — one extra query per table). Default false.' },
+          },
+          required: ['projectSlug', 'databaseId'],
+        },
+      },
+      {
+        name: 'haops_sample_table_data',
+        description:
+          'Page through a table\'s actual ROWS on a project\'s stored database connection — a paged, identifier-'
+          + 'guarded SELECT * (table/column names are validated against a strict identifier pattern; values are '
+          + 'always bound parameters). Use after haops_introspect_database to sample real data from a table it '
+          + 'reported, e.g. to sanity-check a planned migration or understand what a column actually holds.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            databaseId: { type: 'string', description: 'ProjectDatabase UUID (the stored connection)' },
+            tableName: { type: 'string', description: 'Table name (must match ^[a-zA-Z_][a-zA-Z0-9_]*$ — rejected otherwise)' },
+            page: { type: 'number', description: 'Zero-based page index (default 0)' },
+            pageSize: { type: 'number', description: 'Rows per page, 1-100 (default 25)' },
+            sortBy: { type: 'string', description: 'Column to sort by (must match the same identifier pattern; silently ignored if invalid)' },
+            sortOrder: { type: 'string', enum: ['asc', 'desc'], description: 'Sort direction (default asc)' },
+          },
+          required: ['projectSlug', 'databaseId', 'tableName'],
+        },
+      },
+      {
+        name: 'haops_get_schema_diff',
+        description:
+          'Get the machine-readable diff between a database diagram\'s DEPLOYED layer and its DEPLOYED+PLANNED '
+          + 'layer (i.e. what your planning-layer edits would change if applied) — {addedTables, droppedTables, '
+          + 'addedColumns, modifiedColumns, droppedColumns, addedRelationships, droppedRelationships}. Read-only, '
+          + 'no side effects. Only valid for diagramType:"database" diagrams (error otherwise). The system NEVER '
+          + 'generates DDL from this — read the diff and write the migration yourself in the project\'s own repo '
+          + '(see the diagram-authoring Ability\'s database section for the recipe).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID (must be diagramType:"database")' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_sync_database_diagram',
+        description:
+          'Sync a database diagram\'s DEPLOYED layer from its live source connection — re-introspects, reconciles '
+          + '(preserves positions of tables that still exist, adds new ones, drops gone ones, leaves every '
+          + 'layer:"planned" element untouched), and detects DRIFT (a planned change the live schema now already '
+          + 'reflects, or one that conflicts with what actually got deployed). checkOnly:true is READ-ONLY drift '
+          + 'detection for a "schema changed since last sync?" check — re-introspects (no row counts) and compares '
+          + 'fingerprints WITHOUT writing anything, returning {changed, lastSyncedAt}. checkOnly:false (default) '
+          + 'performs the real sync: writes the reconciled content back (bumping lastSyncedAt/schemaFingerprint) '
+          + 'and returns {diagram, addedTables, removedTables, drift} — a drift entry whose planned change the '
+          + 'live schema already reflects is auto-resolved (stripped); a conflicting one is surfaced for you to '
+          + 'reconcile by hand. Only valid for diagramType:"database" diagrams with a sourceDatabaseId (error '
+          + 'otherwise).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID (must be diagramType:"database" with a source connection)' },
+            checkOnly: { type: 'boolean', description: 'true = read-only drift check (GET), no write. false/omitted = perform the real sync (POST).' },
+            includeRowCounts: { type: 'boolean', description: 'Sync only: include a live COUNT(*) per table (slower). Default false. Ignored when checkOnly:true.' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_plan_table',
+        description:
+          'Add a brand-new PLANNED table to a database diagram — a database.table node tagged layer:"planned", '
+          + 'provenance:"authored", changeKind:"new-table" (no deployed counterpart). Reads the diagram\'s current '
+          + 'content once, appends the node, writes back once with a freshly-read contentHash precondition (same '
+          + 'read-modify-write shape as haops_batch_diagram_elements). Use haops_plan_change instead to propose '
+          + 'changes to an EXISTING deployed table. On 409 stale, nothing is written — just retry. Only valid for '
+          + 'diagramType:"database" diagrams.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID (must be diagramType:"database")' },
+            tableName: { type: 'string', description: 'The new table\'s name (becomes the node\'s label)' },
+            columns: {
+              type: 'array',
+              description:
+                'Column definitions (optional; starts empty otherwise). Each: {name (required), dataType?, '
+                + 'maxLength?, nullable?, isPrimaryKey?, isForeignKey?, isUnique?, defaultValue?} — omitted fields '
+                + 'default the same way the app\'s "Add column" does (dataType:"text", nullable:true, everything '
+                + 'else false/null).',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  dataType: { type: 'string' },
+                  maxLength: { type: 'number' },
+                  nullable: { type: 'boolean' },
+                  isPrimaryKey: { type: 'boolean' },
+                  isForeignKey: { type: 'boolean' },
+                  isUnique: { type: 'boolean' },
+                  defaultValue: { type: 'string' },
+                },
+                required: ['name'],
+              },
+            },
+            position: {
+              type: 'object',
+              description: 'Node position (optional; defaults to {x:0,y:0} — follow up with haops_auto_arrange_diagram if you don\'t want to compute layout yourself).',
+              properties: { x: { type: 'number' }, y: { type: 'number' } },
+            },
+          },
+          required: ['projectSlug', 'diagramId', 'tableName'],
+        },
+      },
+      {
+        name: 'haops_plan_change',
+        description:
+          'Propose column-level changes to an EXISTING deployed table in a database diagram — finds (or creates) '
+          + 'the PLANNED OVERLAY node for `targetTableName` (layer:"planned", provenance:"authored", pointing '
+          + 'back at the deployed table by name; never mutates the deployed node itself), then applies each '
+          + 'requested column change in order: "add-column" (a wholly new column), "modify-column" (patches an '
+          + 'existing overlay column\'s fields and snapshots its PRE-patch values into previous*), or '
+          + '"drop-column" (tags an existing overlay column as dropped — kept visible-but-struck-through, not '
+          + 'removed). The overlay starts as a plain copy of the deployed table\'s columns (context, no '
+          + 'changeKind) the first time it is created for this table — repeat calls reuse that SAME overlay node. '
+          + 'Errors if no deployed table named `targetTableName` exists yet (use haops_plan_table for a brand-new '
+          + 'table instead). Same read-modify-write-under-one-hash shape as haops_batch_diagram_elements; on 409 '
+          + 'stale, nothing is written — just retry. Only valid for diagramType:"database" diagrams.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID (must be diagramType:"database")' },
+            targetTableName: { type: 'string', description: 'Name of the EXISTING deployed table to propose changes to' },
+            changes: {
+              type: 'array',
+              description: 'Column changes to apply, in order.',
+              items: {
+                type: 'object',
+                properties: {
+                  changeKind: {
+                    type: 'string',
+                    enum: ['add-column', 'modify-column', 'drop-column'],
+                    description: '"add-column" adds a new column; "modify-column"/"drop-column" target an existing overlay column (matched by columnName).',
+                  },
+                  columnName: { type: 'string', description: 'Required for "modify-column"/"drop-column" — the column name to target (matched against the overlay\'s current columns).' },
+                  column: {
+                    type: 'object',
+                    description: 'Required for "add-column" (the full new column def); for "modify-column", the fields to patch onto the existing column (only the fields you pass change).',
+                    properties: {
+                      name: { type: 'string' },
+                      dataType: { type: 'string' },
+                      maxLength: { type: 'number' },
+                      nullable: { type: 'boolean' },
+                      isPrimaryKey: { type: 'boolean' },
+                      isForeignKey: { type: 'boolean' },
+                      isUnique: { type: 'boolean' },
+                      defaultValue: { type: 'string' },
+                    },
+                  },
+                },
+                required: ['changeKind'],
+              },
+            },
+          },
+          required: ['projectSlug', 'diagramId', 'targetTableName', 'changes'],
+        },
+      },
+      {
+        name: 'haops_batch_database_elements',
+        description:
+          'Build several PLANNED database elements — new tables, column-change overlays on existing deployed '
+          + 'tables, and FK edges — in ONE read-modify-write call (same one-hash-precondition shape as '
+          + 'haops_batch_diagram_elements / haops_plan_table / haops_plan_change, but batched: reads the diagram '
+          + 'once, applies every operation in order, writes back once). addTables items behave like '
+          + 'haops_plan_table; planChanges items behave like haops_plan_change (creating or reusing that table\'s '
+          + 'overlay). addEdges adds FK-relationship edges tagged layer:"planned", provenance:"authored" — '
+          + 'source/target may be either an existing node id OR a table name (including one just created by an '
+          + 'addTables item earlier in this SAME call — resolved by name). remove deletes nodes/edges by id '
+          + '(removing a node cascades its edges). Prefer this over repeated haops_plan_table / haops_plan_change '
+          + 'calls when authoring more than one or two planned elements at once. On 409 stale, nothing is written '
+          + '— just retry. Only valid for diagramType:"database" diagrams.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID (must be diagramType:"database")' },
+            addTables: {
+              type: 'array',
+              description: 'New planned tables to create (like haops_plan_table, batched). Each: {tableName (required), id?, columns?, position?}.',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string', description: 'Node id (optional — auto-generates if omitted; supply one to reference this table by id from addEdges in this same call, or just reference it by tableName).' },
+                  tableName: { type: 'string' },
+                  columns: { type: 'array', items: { type: 'object' } },
+                  position: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } } },
+                },
+                required: ['tableName'],
+              },
+            },
+            planChanges: {
+              type: 'array',
+              description: 'Column-change proposals on EXISTING deployed tables (like haops_plan_change, batched). Each: {targetTableName (required), changes (required)}.',
+              items: {
+                type: 'object',
+                properties: {
+                  targetTableName: { type: 'string' },
+                  changes: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        changeKind: { type: 'string', enum: ['add-column', 'modify-column', 'drop-column'] },
+                        columnName: { type: 'string' },
+                        column: { type: 'object' },
+                      },
+                      required: ['changeKind'],
+                    },
+                  },
+                },
+                required: ['targetTableName', 'changes'],
+              },
+            },
+            addEdges: {
+              type: 'array',
+              description:
+                'New FK-relationship edges (planned layer). Each: {source, target (required — a node id or a '
+                + 'table name, including one from this same call\'s addTables), sourceColumn, targetColumn '
+                + '(required), cardinality? ("1:1"|"1:N"|"N:M", default "1:N"), changeKind? ("new-fk"|"drop-fk"), '
+                + 'id?}.',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  source: { type: 'string' },
+                  target: { type: 'string' },
+                  sourceColumn: { type: 'string' },
+                  targetColumn: { type: 'string' },
+                  cardinality: { type: 'string', enum: ['1:1', '1:N', 'N:M'] },
+                  changeKind: { type: 'string', enum: ['new-fk', 'drop-fk'] },
+                },
+                required: ['source', 'target', 'sourceColumn', 'targetColumn'],
+              },
+            },
+            remove: {
+              type: 'array',
+              description: 'Elements to delete (optional). Each: {elementType:"node"|"edge", elementId}. Removing a node also removes edges that reference it.',
+              items: {
+                type: 'object',
+                properties: {
+                  elementType: { type: 'string', enum: ['node', 'edge'] },
+                  elementId: { type: 'string' },
+                },
+              },
+            },
           },
           required: ['projectSlug', 'diagramId'],
         },
@@ -9507,9 +10042,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_create_diagram') {
     try {
-      const { projectSlug, title, diagramType, folderId, verbose } = args as {
-        projectSlug: string; title: string; diagramType?: string; folderId?: string; verbose?: boolean;
+      const { projectSlug, title, diagramType, databaseId, folderId, verbose } = args as {
+        projectSlug: string; title?: string; diagramType?: string; databaseId?: string; folderId?: string; verbose?: boolean;
       };
+
+      // diagramType:"database" + databaseId is a SEPARATE creation path (POST
+      // databases/[id]/diagram) — introspects the connection once and returns
+      // an already-populated diagram. That route only accepts {title}; it has
+      // no folderId support (see the tool description).
+      if (diagramType === 'database' && databaseId) {
+        const body: Record<string, unknown> = {};
+        if (title !== undefined) body.title = title;
+        const result = await apiClient.request('POST', `/api/projects/${projectSlug}/databases/${databaseId}/diagram`, body);
+        return { content: [{ type: 'text', text: formatWriteResult('created', result as unknown as Record<string, unknown>, !!verbose) }] };
+      }
+
+      if (!title) {
+        return {
+          content: [{ type: 'text', text: 'Error creating diagram: title is required unless diagramType:"database" with databaseId is supplied.' }],
+          isError: true,
+        };
+      }
       const body: Record<string, unknown> = { title };
       if (diagramType !== undefined) body.diagramType = diagramType;
       if (folderId !== undefined) body.folderId = folderId;
@@ -10109,6 +10662,284 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error creating diagram from template: ${message}` }], isError: true };
+    }
+  }
+
+  // ===== Database Explorer -> Diagram Studio: DB MCP tool handlers (F3) =====
+
+  if (name === 'haops_introspect_database') {
+    try {
+      const { projectSlug, databaseId, includeRowCounts } = args as {
+        projectSlug: string; databaseId: string; includeRowCounts?: boolean;
+      };
+      const body: Record<string, unknown> = {};
+      if (includeRowCounts !== undefined) body.includeRowCounts = includeRowCounts;
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/databases/${databaseId}/schema`, body);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error introspecting database: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_sample_table_data') {
+    try {
+      const { projectSlug, databaseId, tableName, page, pageSize, sortBy, sortOrder } = args as {
+        projectSlug: string; databaseId: string; tableName: string; page?: number; pageSize?: number;
+        sortBy?: string; sortOrder?: 'asc' | 'desc';
+      };
+      const body: Record<string, unknown> = { tableName };
+      if (page !== undefined) body.page = page;
+      if (pageSize !== undefined) body.pageSize = pageSize;
+      if (sortBy !== undefined) body.sortBy = sortBy;
+      if (sortOrder !== undefined) body.sortOrder = sortOrder;
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/databases/${databaseId}/table-data`, body);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error sampling table data: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_get_schema_diff') {
+    try {
+      const { projectSlug, diagramId } = args as { projectSlug: string; diagramId: string };
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/diagrams/${diagramId}/schema-diff`);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error getting schema diff: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_sync_database_diagram') {
+    try {
+      const { projectSlug, diagramId, checkOnly, includeRowCounts } = args as {
+        projectSlug: string; diagramId: string; checkOnly?: boolean; includeRowCounts?: boolean;
+      };
+      if (checkOnly === true) {
+        const result = await apiClient.request('GET', `/api/projects/${projectSlug}/diagrams/${diagramId}/sync`);
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      const body: Record<string, unknown> = {};
+      if (includeRowCounts !== undefined) body.includeRowCounts = includeRowCounts;
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/diagrams/${diagramId}/sync`, body);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error syncing database diagram: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_plan_table') {
+    try {
+      const { projectSlug, diagramId, tableName, columns, position } = args as {
+        projectSlug: string; diagramId: string; tableName: string;
+        columns?: Array<Record<string, unknown>>; position?: { x: number; y: number };
+      };
+
+      const current = await fetchDiagramForMutation(projectSlug, diagramId);
+      const guardError = requireDatabaseDiagram(current, 'haops_plan_table');
+      if (guardError) return guardError;
+
+      const content = current.content;
+      const normalizedColumns = (columns ?? []).map((c) => normalizeDbColumn(c));
+      const nodeId = plannedTableNodeId(tableName);
+      const node = {
+        id: nodeId,
+        type: 'database.table',
+        position: position ?? { x: 0, y: 0 },
+        data: buildPlannedTableNodeData(tableName, normalizedColumns),
+      };
+      content.nodes = [...content.nodes, node];
+
+      const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
+      return { content: [{ type: 'text', text: JSON.stringify({ nodeId, diagram: result }) }] };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return { content: [{ type: 'text', text: diagramStaleMessage('haops_plan_table') }], isError: true };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error planning table: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_plan_change') {
+    try {
+      const { projectSlug, diagramId, targetTableName, changes } = args as {
+        projectSlug: string; diagramId: string; targetTableName: string;
+        changes: Array<{ changeKind: DbColumnChangeKind; columnName?: string; column?: Record<string, unknown> }>;
+      };
+
+      const current = await fetchDiagramForMutation(projectSlug, diagramId);
+      const guardError = requireDatabaseDiagram(current, 'haops_plan_change');
+      if (guardError) return guardError;
+
+      const content = current.content;
+      const deployedNode = findDeployedTableNode(content.nodes, targetTableName);
+      if (!deployedNode) {
+        return {
+          content: [{
+            type: 'text',
+            text:
+              `Error: no deployed table named "${targetTableName}" found on diagram ${diagramId}. Nothing was `
+              + 'written. Use haops_plan_table for a brand-new table, or haops_introspect_database / '
+              + 'haops_sync_database_diagram if the deployed layer looks stale.',
+          }],
+          isError: true,
+        };
+      }
+
+      let overlayNode = findPlannedOverlayNode(content.nodes, targetTableName);
+      const isNewOverlay = !overlayNode;
+      if (!overlayNode) {
+        overlayNode = {
+          id: plannedTableNodeId(targetTableName),
+          type: 'database.table',
+          position: offsetPosition(deployedNode.position as { x: number; y: number } | undefined),
+          data: buildPlannedOverlayNodeData(deployedNode.data as Record<string, unknown>),
+        };
+      }
+      const overlayData = overlayNode.data as { columns: DbColumnData[]; [key: string]: unknown };
+      const { columns: nextColumns, warnings } = applyColumnChanges(overlayData.columns, changes);
+      overlayNode.data = { ...overlayData, columns: nextColumns };
+
+      content.nodes = isNewOverlay
+        ? [...content.nodes, overlayNode]
+        : content.nodes.map((n) => (n.id === overlayNode!.id ? overlayNode! : n));
+
+      const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
+      return { content: [{ type: 'text', text: JSON.stringify({ overlayNodeId: overlayNode.id, warnings, diagram: result }) }] };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return { content: [{ type: 'text', text: diagramStaleMessage('haops_plan_change') }], isError: true };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error planning change: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_batch_database_elements') {
+    try {
+      const { projectSlug, diagramId, addTables, planChanges, addEdges, remove } = args as {
+        projectSlug: string; diagramId: string;
+        addTables?: Array<{ id?: string; tableName: string; columns?: Array<Record<string, unknown>>; position?: { x: number; y: number } }>;
+        planChanges?: Array<{ targetTableName: string; changes: Array<{ changeKind: DbColumnChangeKind; columnName?: string; column?: Record<string, unknown> }> }>;
+        addEdges?: Array<{ id?: string; source: string; target: string; sourceColumn: string; targetColumn: string; cardinality?: DbRelationshipCardinality; changeKind?: 'new-fk' | 'drop-fk' }>;
+        remove?: Array<{ elementType: 'node' | 'edge'; elementId: string }>;
+      };
+
+      const current = await fetchDiagramForMutation(projectSlug, diagramId);
+      const guardError = requireDatabaseDiagram(current, 'haops_batch_database_elements');
+      if (guardError) return guardError;
+
+      const content = current.content;
+      const warnings: string[] = [];
+      const addedTableIds: string[] = [];
+      const addedEdgeIds: string[] = [];
+
+      // Table-name -> node-id map, seeded from existing content (deployed + planned tables), then
+      // extended as addTables items are appended below (so addEdges in this same call can reference by name).
+      const nameToId = new Map<string, string>();
+      for (const n of content.nodes) {
+        const data = n.data as Record<string, unknown> | undefined;
+        const label = data?.label;
+        const id = n.id;
+        if (typeof label === 'string' && typeof id === 'string') nameToId.set(label, id);
+      }
+
+      // 1) addTables — like haops_plan_table, batched.
+      for (const item of addTables ?? []) {
+        if (!item.tableName) {
+          warnings.push('addTables: skipped an entry missing required tableName');
+          continue;
+        }
+        const nodeId = item.id ?? plannedTableNodeId(item.tableName);
+        const normalizedColumns = (item.columns ?? []).map((c) => normalizeDbColumn(c));
+        content.nodes = [...content.nodes, {
+          id: nodeId,
+          type: 'database.table',
+          position: item.position ?? { x: 0, y: 0 },
+          data: buildPlannedTableNodeData(item.tableName, normalizedColumns),
+        }];
+        nameToId.set(item.tableName, nodeId);
+        addedTableIds.push(nodeId);
+      }
+
+      // 2) planChanges — find/create the overlay, same semantics as haops_plan_change.
+      for (const item of planChanges ?? []) {
+        const deployedNode = findDeployedTableNode(content.nodes, item.targetTableName);
+        if (!deployedNode) {
+          warnings.push(`planChanges: no deployed table named "${item.targetTableName}" found — skipped`);
+          continue;
+        }
+        let overlayNode = findPlannedOverlayNode(content.nodes, item.targetTableName);
+        const isNewOverlay = !overlayNode;
+        if (!overlayNode) {
+          overlayNode = {
+            id: plannedTableNodeId(item.targetTableName),
+            type: 'database.table',
+            position: offsetPosition(deployedNode.position as { x: number; y: number } | undefined),
+            data: buildPlannedOverlayNodeData(deployedNode.data as Record<string, unknown>),
+          };
+        }
+        const overlayData = overlayNode.data as { columns: DbColumnData[]; [key: string]: unknown };
+        const { columns: nextColumns, warnings: changeWarnings } = applyColumnChanges(overlayData.columns, item.changes);
+        overlayNode.data = { ...overlayData, columns: nextColumns };
+        warnings.push(...changeWarnings.map((w) => `planChanges(${item.targetTableName}): ${w}`));
+        if (isNewOverlay) {
+          content.nodes = [...content.nodes, overlayNode];
+        } else {
+          content.nodes = content.nodes.map((n) => (n.id === overlayNode!.id ? overlayNode! : n));
+        }
+      }
+
+      // 3) addEdges — source/target may be a literal node id OR a table name (resolved via nameToId).
+      for (const edge of addEdges ?? []) {
+        const source = resolveTableRef(edge.source, content.nodes, nameToId);
+        const target = resolveTableRef(edge.target, content.nodes, nameToId);
+        if (!source || !target) {
+          warnings.push(`addEdges: could not resolve source/target ("${edge.source}" -> "${edge.target}") to a node id or known table name — skipped`);
+          continue;
+        }
+        const id = edge.id ?? randomElementId('edge');
+        content.edges = [...content.edges, buildPlannedFkEdge({
+          id, source, target, sourceColumn: edge.sourceColumn, targetColumn: edge.targetColumn,
+          cardinality: edge.cardinality, changeKind: edge.changeKind,
+        })];
+        addedEdgeIds.push(id);
+      }
+
+      // 4) remove — same semantics as haops_batch_diagram_elements (node removal cascades its edges).
+      let cascadedEdgesRemoved = 0;
+      for (const op of remove ?? []) {
+        if (op.elementType === 'node') {
+          const before = content.nodes.length;
+          content.nodes = content.nodes.filter((n) => n.id !== op.elementId);
+          if (content.nodes.length === before) {
+            warnings.push(`remove: no node with id "${op.elementId}" found — skipped`);
+            continue;
+          }
+          const beforeEdges = content.edges.length;
+          content.edges = content.edges.filter((e) => e.source !== op.elementId && e.target !== op.elementId);
+          cascadedEdgesRemoved += beforeEdges - content.edges.length;
+        } else {
+          const before = content.edges.length;
+          content.edges = content.edges.filter((e) => e.id !== op.elementId);
+          if (content.edges.length === before) {
+            warnings.push(`remove: no edge with id "${op.elementId}" found — skipped`);
+          }
+        }
+      }
+
+      const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
+      return { content: [{ type: 'text', text: JSON.stringify({ addedTableIds, addedEdgeIds, cascadedEdgesRemoved, warnings, diagram: result }) }] };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return { content: [{ type: 'text', text: diagramStaleMessage('haops_batch_database_elements') }], isError: true };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error batch-editing database elements: ${message}` }], isError: true };
     }
   }
 
