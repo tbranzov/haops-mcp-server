@@ -4357,9 +4357,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           + 'diagramType:"database" is special: pass `databaseId` (a ProjectDatabase UUID) to introspect that '
           + 'live connection ONCE and create the diagram already populated with its deployed-layer schema (title '
           + 'defaults to the connection\'s own name when omitted; folderId is NOT supported on this path — use '
-          + 'haops_update_diagram(folderId:...) afterward if you want it filed). Omit databaseId for an empty '
-          + '"database" diagram with no source connection (author its planning layer from scratch via '
-          + 'haops_plan_table).',
+          + 'haops_update_diagram(folderId:...) afterward if you want it filed). `databaseId` is REQUIRED for '
+          + 'diagramType:"database": a database diagram must be bound to a source connection — the generic create '
+          + 'route rejects a source-less "database" diagram (HTTP 400). Discover a connection with '
+          + 'haops_list_databases, or create one with haops_create_database_connection (which auto-provisions its '
+          + 'bound diagram directly).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -4380,8 +4382,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description:
                 'diagramType:"database" only — a ProjectDatabase UUID to introspect and populate the new diagram '
-                + 'from (posts to the databases/[id]/diagram route instead of the generic create route). Omit for '
-                + 'an empty database diagram with no source connection.',
+                + 'from (posts to the databases/[id]/diagram route instead of the generic create route). REQUIRED '
+                + 'for diagramType:"database" — a source-less database diagram is rejected (HTTP 400). Use '
+                + 'haops_list_databases to find one.',
             },
             folderId: { type: 'string', description: 'DiagramFolder UUID to file this diagram under (optional; default: unfiled). Ignored when databaseId is supplied — see the diagramType:"database" note above.' },
           },
@@ -5197,6 +5200,85 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
           },
           required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
+        name: 'haops_list_databases',
+        description:
+          'List a project\'s stored database connections (ProjectDatabase rows) — the DISCOVERY tool of the DB '
+          + 'Explorer toolset. Returns each connection\'s {id, name, description, isActive, allowPrivateHost, '
+          + 'createdAt} (the connectionString is always masked). Use it to get a `databaseId` to pass to '
+          + 'haops_create_diagram(diagramType:"database"), haops_introspect_database, haops_sample_table_data, or '
+          + 'haops_sync_database_diagram. Owner/admin only (same access as the Databases settings panel).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_create_database_connection',
+        description:
+          'Create a stored database connection (ProjectDatabase) for a project and — when it is active — '
+          + 'auto-provision its bound `database` diagram (introspected + filed under the system "Database" '
+          + 'folder), mirroring the app\'s "connect a database" flow. Returns the created connection plus '
+          + '{diagramProvisioned, diagramId, diagramWarning}: if diagramProvisioned is true, diagramId is the '
+          + 'ready-to-use database diagram; if false, diagramWarning explains why introspection did not run '
+          + '(e.g. an SSRF-blocked private host — see allowPrivateHost). Owner/admin only; allowPrivateHost is '
+          + 'platform-admin only. Prefer this over haops_create_diagram for a NEW connection — it does the '
+          + 'connection + the bound diagram in one call.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            name: { type: 'string', description: 'Display name for the connection (unique within the project)' },
+            connectionString: { type: 'string', description: 'The database DSN (e.g. postgres://user:pass@host:5432/db). Stored encrypted; SSRF-guarded (private/loopback hosts are blocked unless allowPrivateHost is set by a platform admin).' },
+            description: { type: 'string', description: 'Optional free-text description' },
+            isActive: { type: 'boolean', description: 'Whether the connection is active (default true). An inactive connection is not introspected and gets no auto-diagram.' },
+            allowPrivateHost: { type: 'boolean', description: 'Platform-admin ONLY: allow the connection to dial a private/internal/loopback host (SSRF bypass). Ignored (and rejected with 403 if true) for non-admins.' },
+          },
+          required: ['projectSlug', 'name', 'connectionString'],
+        },
+      },
+      {
+        name: 'haops_delete_database_connection',
+        description:
+          'Delete a stored database connection (ProjectDatabase). Its bound database diagram is NOT deleted — the '
+          + 'FK is ON DELETE SET NULL, so the diagram is orphaned (sourceDatabaseId cleared) and can be re-bound '
+          + 'by re-creating the same connection. Owner/admin only. Irreversible for the connection row itself.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            databaseId: { type: 'string', description: 'ProjectDatabase UUID to delete' },
+          },
+          required: ['projectSlug', 'databaseId'],
+        },
+      },
+      {
+        name: 'haops_plan_association',
+        description:
+          'Add ONE planned FK relationship (association) between two tables on a database diagram — a single-shot '
+          + 'equivalent of haops_batch_database_elements addEdges, mirroring the app\'s "Add association" tool. '
+          + 'Appends a planned edge (layer:"planned", provenance:"authored", changeKind:"new-fk") so the schema '
+          + 'diff/drift engine folds it in. `source`/`target` may each be a literal node id OR a table name '
+          + '(deployed or planned) on the diagram. Reads once, appends, writes back with a freshly-read '
+          + 'contentHash; on 409 stale nothing is written — just retry. Only valid for diagramType:"database" '
+          + 'diagrams. Use haops_plan_table / haops_plan_change for tables/columns.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug' },
+            diagramId: { type: 'string', description: 'Diagram UUID (must be diagramType:"database")' },
+            source: { type: 'string', description: 'FK-holding side: a node id or a table name on the diagram' },
+            target: { type: 'string', description: 'Referenced side: a node id or a table name on the diagram' },
+            sourceColumn: { type: 'string', description: 'The FK column on the source table' },
+            targetColumn: { type: 'string', description: 'The referenced (usually PK) column on the target table' },
+            cardinality: { type: 'string', enum: ['1:1', '1:N', 'N:M'], description: 'Relationship cardinality (default "1:N")' },
+          },
+          required: ['projectSlug', 'diagramId', 'source', 'target', 'sourceColumn', 'targetColumn'],
         },
       },
     ],
@@ -10076,6 +10158,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: formatWriteResult('created', result as unknown as Record<string, unknown>, !!verbose) }] };
       }
 
+      // A database diagram must be bound to a source connection. The generic
+      // create route below rejects diagramType:"database" (HTTP 400) since the
+      // app-side source-bound workflow (feature 14ddb1fa) — fail here with an
+      // actionable message instead of forwarding an opaque 400.
+      if (diagramType === 'database') {
+        return {
+          content: [{
+            type: 'text',
+            text:
+              'Error creating diagram: a "database" diagram must be bound to a source connection — pass '
+              + '`databaseId` (find one with haops_list_databases, or create one with '
+              + 'haops_create_database_connection, which auto-provisions its bound diagram). A source-less '
+              + 'database diagram is not allowed.',
+          }],
+          isError: true,
+        };
+      }
+
       if (!title) {
         return {
           content: [{ type: 'text', text: 'Error creating diagram: title is required unless diagramType:"database" with databaseId is supplied.' }],
@@ -11001,6 +11101,95 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const message = error instanceof Error ? error.message : 'Unknown error';
       return { content: [{ type: 'text', text: `Error batch-editing database elements: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_list_databases') {
+    try {
+      const { projectSlug } = args as { projectSlug: string };
+      const result = await apiClient.request('GET', `/api/projects/${projectSlug}/databases`);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error listing database connections: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_create_database_connection') {
+    try {
+      const { projectSlug, name: connName, connectionString, description, isActive, allowPrivateHost } = args as {
+        projectSlug: string; name: string; connectionString: string;
+        description?: string; isActive?: boolean; allowPrivateHost?: boolean;
+      };
+      const body: Record<string, unknown> = { name: connName, connectionString };
+      if (description !== undefined) body.description = description;
+      if (isActive !== undefined) body.isActive = isActive;
+      if (allowPrivateHost !== undefined) body.allowPrivateHost = allowPrivateHost;
+      const result = await apiClient.request('POST', `/api/projects/${projectSlug}/databases`, body);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error creating database connection: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_delete_database_connection') {
+    try {
+      const { projectSlug, databaseId } = args as { projectSlug: string; databaseId: string };
+      await apiClient.request('DELETE', `/api/projects/${projectSlug}/databases/${databaseId}`);
+      return { content: [{ type: 'text', text: JSON.stringify({ deleted: true, databaseId }) }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error deleting database connection: ${message}` }], isError: true };
+    }
+  }
+
+  if (name === 'haops_plan_association') {
+    try {
+      const { projectSlug, diagramId, source, target, sourceColumn, targetColumn, cardinality } = args as {
+        projectSlug: string; diagramId: string; source: string; target: string;
+        sourceColumn: string; targetColumn: string; cardinality?: DbRelationshipCardinality;
+      };
+
+      const current = await fetchDiagramForMutation(projectSlug, diagramId);
+      const guardError = requireDatabaseDiagram(current, 'haops_plan_association');
+      if (guardError) return guardError;
+
+      const content = current.content;
+      // Table-name -> node-id map (deployed + planned), so source/target may be a name or a literal node id.
+      const nameToId = new Map<string, string>();
+      for (const n of content.nodes) {
+        const data = n.data as Record<string, unknown> | undefined;
+        if (typeof data?.label === 'string' && typeof n.id === 'string') nameToId.set(data.label as string, n.id);
+      }
+      const resolvedSource = resolveTableRef(source, content.nodes, nameToId);
+      const resolvedTarget = resolveTableRef(target, content.nodes, nameToId);
+      if (!resolvedSource || !resolvedTarget) {
+        return {
+          content: [{
+            type: 'text',
+            text:
+              `Error: could not resolve source/target ("${source}" -> "${target}") to a node id or a table name `
+              + `on diagram ${diagramId}. Nothing was written. Use haops_get_diagram to see the current nodes, or `
+              + 'haops_plan_table to add a table first.',
+          }],
+          isError: true,
+        };
+      }
+
+      const id = randomElementId('edge');
+      content.edges = [...content.edges, buildPlannedFkEdge({
+        id, source: resolvedSource, target: resolvedTarget, sourceColumn, targetColumn, cardinality, changeKind: 'new-fk',
+      })];
+
+      const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
+      return { content: [{ type: 'text', text: JSON.stringify({ edgeId: id, diagram: result }) }] };
+    } catch (error) {
+      if (isDiagramStale409(error)) {
+        return { content: [{ type: 'text', text: diagramStaleMessage('haops_plan_association') }], isError: true };
+      }
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return { content: [{ type: 'text', text: `Error planning association: ${message}` }], isError: true };
     }
   }
 

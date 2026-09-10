@@ -584,13 +584,12 @@ describe('haops_create_diagram — database support', () => {
     expect(body).toEqual({});
   });
 
-  it('diagramType:"database" with NO databaseId falls through to the generic create route', async () => {
-    mockRequest.mockResolvedValueOnce({ id: DIAGRAM_ID, title: 'Empty DB Diagram', diagramType: 'database' });
-    await callTool('haops_create_diagram', { projectSlug: PROJECT_SLUG, diagramType: 'database', title: 'Empty DB Diagram' });
-    const [method, url, body] = callArgs();
-    expect(method).toBe('POST');
-    expect(url).toBe(`/api/projects/${PROJECT_SLUG}/diagrams`);
-    expect(body).toEqual({ title: 'Empty DB Diagram', diagramType: 'database' });
+  it('diagramType:"database" with NO databaseId errors (no request) — a database diagram must be source-bound', async () => {
+    const result = await callTool('haops_create_diagram', { projectSlug: PROJECT_SLUG, diagramType: 'database', title: 'Empty DB Diagram' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('must be bound to a source connection');
+    expect(result.content[0].text).toContain('databaseId');
+    expect(mockRequest).not.toHaveBeenCalled();
   });
 
   it('errors (no request made) when title is missing and databaseId is not supplied', async () => {
@@ -598,5 +597,89 @@ describe('haops_create_diagram — database support', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('title is required');
     expect(mockRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe('haops_list_databases / create / delete connection', () => {
+  it('list GETs the databases route', async () => {
+    mockRequest.mockResolvedValueOnce([{ id: DATABASE_ID, name: 'Prod', isActive: true }]);
+    await callTool('haops_list_databases', { projectSlug: PROJECT_SLUG });
+    expect(callArgs()).toEqual(['GET', `/api/projects/${PROJECT_SLUG}/databases`, undefined]);
+  });
+
+  it('create POSTs name+connectionString plus any optional fields supplied', async () => {
+    mockRequest.mockResolvedValueOnce({ id: DATABASE_ID, name: 'Prod', diagramProvisioned: true, diagramId: DIAGRAM_ID });
+    await callTool('haops_create_database_connection', {
+      projectSlug: PROJECT_SLUG, name: 'Prod', connectionString: 'postgres://u:p@h:5432/db',
+      description: 'main', isActive: true, allowPrivateHost: true,
+    });
+    const [method, url, body] = callArgs();
+    expect(method).toBe('POST');
+    expect(url).toBe(`/api/projects/${PROJECT_SLUG}/databases`);
+    expect(body).toEqual({ name: 'Prod', connectionString: 'postgres://u:p@h:5432/db', description: 'main', isActive: true, allowPrivateHost: true });
+  });
+
+  it('create omits optional fields when not supplied', async () => {
+    mockRequest.mockResolvedValueOnce({ id: DATABASE_ID, name: 'Prod' });
+    await callTool('haops_create_database_connection', { projectSlug: PROJECT_SLUG, name: 'Prod', connectionString: 'postgres://u:p@h:5432/db' });
+    const [, , body] = callArgs();
+    expect(body).toEqual({ name: 'Prod', connectionString: 'postgres://u:p@h:5432/db' });
+  });
+
+  it('delete DELETEs the databases/[id] route', async () => {
+    mockRequest.mockResolvedValueOnce({ message: 'Database removed' });
+    const result = await callTool('haops_delete_database_connection', { projectSlug: PROJECT_SLUG, databaseId: DATABASE_ID });
+    expect(callArgs()).toEqual(['DELETE', `/api/projects/${PROJECT_SLUG}/databases/${DATABASE_ID}`, undefined]);
+    expect(resultJson(result)).toEqual({ deleted: true, databaseId: DATABASE_ID });
+  });
+});
+
+describe('haops_plan_association', () => {
+  it('appends a planned FK edge resolving table names to node ids, writing back with the read contentHash', async () => {
+    const orders = deployedTableNode('orders', [], { x: 0, y: 0 });
+    const customers = deployedTableNode('customers', [], { x: 300, y: 0 });
+    mockRequest.mockResolvedValueOnce(databaseDiagram([orders, customers])); // GET
+    mockRequest.mockResolvedValueOnce({ id: DIAGRAM_ID }); // PATCH
+
+    const result = await callTool('haops_plan_association', {
+      projectSlug: PROJECT_SLUG, diagramId: DIAGRAM_ID,
+      source: 'orders', target: 'customers', sourceColumn: 'customer_id', targetColumn: 'id', cardinality: '1:N',
+    });
+
+    const [, , patchBody] = callArgs(1);
+    const body = patchBody as { content: { edges: Array<Record<string, unknown>> }; baseContentHash: string };
+    expect(body.baseContentHash).toBe(CURRENT_HASH);
+    expect(body.content.edges).toHaveLength(1);
+    const edge = body.content.edges[0];
+    expect(edge.source).toBe(orders.id);
+    expect(edge.target).toBe(customers.id);
+    expect(edge.type).toBe('generic');
+    expect(edge.data).toMatchObject({
+      cardinality: '1:N', sourceColumn: 'customer_id', targetColumn: 'id',
+      layer: 'planned', provenance: 'authored', changeKind: 'new-fk',
+    });
+    expect(result.isError).toBeUndefined();
+    expect(typeof resultJson(result).edgeId).toBe('string');
+  });
+
+  it('errors (no write) when source or target cannot be resolved', async () => {
+    mockRequest.mockResolvedValueOnce(databaseDiagram([deployedTableNode('orders')]));
+    const result = await callTool('haops_plan_association', {
+      projectSlug: PROJECT_SLUG, diagramId: DIAGRAM_ID,
+      source: 'orders', target: 'ghost', sourceColumn: 'x', targetColumn: 'id',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('could not resolve source/target');
+    expect(mockRequest).toHaveBeenCalledTimes(1); // GET only, no PATCH
+  });
+
+  it('errors (no write) when the target diagram is not diagramType:"database"', async () => {
+    mockRequest.mockResolvedValueOnce({ id: DIAGRAM_ID, diagramType: 'flowchart', content: { nodes: [], edges: [] }, contentHash: CURRENT_HASH });
+    const result = await callTool('haops_plan_association', {
+      projectSlug: PROJECT_SLUG, diagramId: DIAGRAM_ID, source: 'a', target: 'b', sourceColumn: 'x', targetColumn: 'y',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not "database"');
+    expect(mockRequest).toHaveBeenCalledTimes(1);
   });
 });
