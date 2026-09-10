@@ -264,6 +264,14 @@ function applyColumnChanges(
         warnings.push('add-column: skipped an entry missing required column.name');
         continue;
       }
+      // Dedup: adding a column whose name already exists on the overlay (a
+      // deployed/inherited column, or one added earlier in this same batch)
+      // would silently stack a duplicate. Skip it with a warning instead —
+      // use modify-column to change an existing column.
+      if (result.some((c) => c.name === change.column!.name)) {
+        warnings.push(`add-column: a column named "${change.column!.name}" already exists on the overlay — skipped (use modify-column to change it)`);
+        continue;
+      }
       result.push(setDbColumnChangeKind(normalizeDbColumn(change.column), 'add-column'));
       continue;
     }
@@ -327,6 +335,17 @@ function findPlannedOverlayNode(
   return nodes.find((n) => {
     const data = n.data as Record<string, unknown> | undefined;
     return data?.layer === 'planned' && data?.targetTableName === tableName;
+  });
+}
+
+/** Finds an existing PLANNED NEW-TABLE node (changeKind:'new-table') whose label is `tableName`, if any — used to keep haops_plan_table idempotent. */
+function findPlannedNewTableNode(
+  nodes: Array<Record<string, unknown>>,
+  tableName: string,
+): Record<string, unknown> | undefined {
+  return nodes.find((n) => {
+    const data = n.data as Record<string, unknown> | undefined;
+    return data?.layer === 'planned' && data?.changeKind === 'new-table' && data?.label === tableName;
   });
 }
 
@@ -10743,6 +10762,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (guardError) return guardError;
 
       const content = current.content;
+
+      // Dedup: a table of this name already existing on the diagram (deployed,
+      // or a planned new-table added earlier) would stack a second overlapping
+      // node. Refuse with a clear pointer to the right tool instead.
+      const existingDeployed = findDeployedTableNode(content.nodes, tableName);
+      if (existingDeployed) {
+        return {
+          content: [{
+            type: 'text',
+            text:
+              `Error: a deployed table named "${tableName}" already exists on diagram ${diagramId}. Nothing was `
+              + 'written. Use haops_plan_change to propose changes to an existing table, not haops_plan_table.',
+          }],
+          isError: true,
+        };
+      }
+      const existingPlanned = findPlannedNewTableNode(content.nodes, tableName);
+      if (existingPlanned) {
+        return {
+          content: [{
+            type: 'text',
+            text:
+              `Error: a planned new table named "${tableName}" already exists on diagram ${diagramId} `
+              + `(node ${existingPlanned.id}). Nothing was written. Edit that node with `
+              + 'haops_update_diagram_element, or use a different table name.',
+          }],
+          isError: true,
+        };
+      }
+
       const normalizedColumns = (columns ?? []).map((c) => normalizeDbColumn(c));
       const nodeId = plannedTableNodeId(tableName);
       const node = {
@@ -10852,6 +10901,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       for (const item of addTables ?? []) {
         if (!item.tableName) {
           warnings.push('addTables: skipped an entry missing required tableName');
+          continue;
+        }
+        // Dedup (F10): a table of this name already on the diagram — deployed,
+        // a planned new-table, or one added earlier in THIS batch (nameToId is
+        // seeded from content and extended below) — would stack a duplicate
+        // overlapping node. Skip with a warning; use planChanges to amend one.
+        if (findDeployedTableNode(content.nodes, item.tableName)) {
+          warnings.push(`addTables: a deployed table named "${item.tableName}" already exists — skipped (use planChanges to amend it)`);
+          continue;
+        }
+        if (nameToId.has(item.tableName)) {
+          warnings.push(`addTables: a table named "${item.tableName}" already exists on the diagram — skipped (duplicate)`);
           continue;
         }
         const nodeId = item.id ?? plannedTableNodeId(item.tableName);

@@ -82,6 +82,15 @@ function deployedTableNode(tableName: string, columns: Array<Record<string, unkn
   };
 }
 
+function plannedNewTableNode(tableName: string, columns: Array<Record<string, unknown>> = [], position = { x: 10, y: 20 }) {
+  return {
+    id: `db_table_plan_${tableName}_abc1234`,
+    type: 'database.table',
+    position,
+    data: { label: tableName, columns, layer: 'planned', provenance: 'authored', changeKind: 'new-table' },
+  };
+}
+
 /** Access the (method, url, body) of the Nth call to the mocked `request`. */
 function callArgs(n = 0): [string, string, unknown] {
   return mockRequest.mock.calls[n] as [string, string, unknown];
@@ -232,6 +241,23 @@ describe('haops_plan_table', () => {
     expect(result.content[0].text).toContain('stale');
     expect(result.content[0].text).toContain('haops_plan_table');
   });
+
+  it('dedup: errors (no write) when a DEPLOYED table of that name already exists, pointing at haops_plan_change', async () => {
+    mockRequest.mockResolvedValueOnce(databaseDiagram([deployedTableNode('accounts')]));
+    const result = await callTool('haops_plan_table', { projectSlug: PROJECT_SLUG, diagramId: DIAGRAM_ID, tableName: 'accounts' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('a deployed table named "accounts" already exists');
+    expect(result.content[0].text).toContain('haops_plan_change');
+    expect(mockRequest).toHaveBeenCalledTimes(1); // GET only, no PATCH
+  });
+
+  it('dedup: errors (no write) when a PLANNED new-table of that name already exists (no duplicate overlapping node)', async () => {
+    mockRequest.mockResolvedValueOnce(databaseDiagram([plannedNewTableNode('widgets')]));
+    const result = await callTool('haops_plan_table', { projectSlug: PROJECT_SLUG, diagramId: DIAGRAM_ID, tableName: 'widgets' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('a planned new table named "widgets" already exists');
+    expect(mockRequest).toHaveBeenCalledTimes(1); // GET only, no PATCH
+  });
 });
 
 describe('haops_plan_change', () => {
@@ -344,6 +370,30 @@ describe('haops_plan_change', () => {
     expect(parsed.warnings).toEqual([expect.stringContaining('no column named "does_not_exist"')]);
   });
 
+  it('add-column dedup: warns and skips (no duplicate column) when the column name already exists on the overlay', async () => {
+    const deployed = deployedTableNode('accounts', [
+      { name: 'id', dataType: 'uuid', maxLength: null, nullable: false, isPrimaryKey: true, isForeignKey: false, isUnique: false, defaultValue: null },
+    ]);
+    mockRequest.mockResolvedValueOnce(databaseDiagram([deployed]));
+    mockRequest.mockResolvedValueOnce({ id: DIAGRAM_ID });
+
+    const result = await callTool('haops_plan_change', {
+      projectSlug: PROJECT_SLUG, diagramId: DIAGRAM_ID, targetTableName: 'accounts',
+      // 'id' is inherited from the deployed table onto the overlay — adding it again must be skipped.
+      changes: [{ changeKind: 'add-column', column: { name: 'id', dataType: 'text' } }],
+    });
+
+    expect(result.isError).toBeUndefined();
+    const parsed = resultJson(result);
+    expect(parsed.warnings).toEqual([expect.stringContaining('a column named "id" already exists')]);
+    const [, , patchBody] = callArgs(1);
+    const body = patchBody as { content: { nodes: Array<Record<string, unknown>> } };
+    const overlay = body.content.nodes.find((n) => n.id !== deployed.id)!;
+    const columns = (overlay.data as Record<string, unknown>).columns as Array<Record<string, unknown>>;
+    expect(columns).toHaveLength(1); // still just the inherited 'id', no duplicate
+    expect(columns[0].dataType).toBe('uuid'); // untouched — the add-column was skipped, not applied
+  });
+
   it('surfaces a 409 stale conflict with a clear retry message', async () => {
     const deployed = deployedTableNode('accounts');
     mockRequest.mockResolvedValueOnce(databaseDiagram([deployed]));
@@ -451,6 +501,32 @@ describe('haops_batch_database_elements', () => {
     });
     const parsed = resultJson(result);
     expect(parsed.warnings).toEqual([expect.stringContaining('no deployed table named "ghost"')]);
+  });
+
+  it('addTables dedup: skips a table whose name collides with a deployed table or with an earlier addTables entry in the same batch', async () => {
+    const deployed = deployedTableNode('orders');
+    mockRequest.mockResolvedValueOnce(databaseDiagram([deployed]));
+    mockRequest.mockResolvedValueOnce({ id: DIAGRAM_ID });
+
+    const result = await callTool('haops_batch_database_elements', {
+      projectSlug: PROJECT_SLUG,
+      diagramId: DIAGRAM_ID,
+      addTables: [
+        { tableName: 'orders' },       // collides with the deployed table -> skipped
+        { tableName: 'invoices' },     // fresh -> added
+        { tableName: 'invoices' },     // duplicate within the same batch -> skipped
+      ],
+    });
+
+    const [, , patchBody] = callArgs(1);
+    const body = patchBody as { content: { nodes: Array<Record<string, unknown>> } };
+    // deployed 'orders' + one 'invoices' = 2 nodes; no duplicate/overlapping node.
+    expect(body.content.nodes).toHaveLength(2);
+    const parsed = resultJson(result);
+    expect(parsed.addedTableIds).toHaveLength(1);
+    const warnings = parsed.warnings as string[];
+    expect(warnings.some((w) => w.includes('a deployed table named "orders" already exists'))).toBe(true);
+    expect(warnings.some((w) => w.includes('a table named "invoices" already exists'))).toBe(true);
   });
 
   it('remove cascades node->edge deletion and reports the count', async () => {
