@@ -3257,8 +3257,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
-            runner: { type: 'string', enum: ['jest', 'playwright', 'manual', 'other'], description: 'Test runner that produced results' },
-            environment: { type: 'string', enum: ['localhost', 'production', 'ci', 'other'], description: 'Environment where tests ran (optional)' },
+            runner: { type: 'string', enum: ['jest', 'playwright', 'vitest', 'manual', 'other'], description: 'Test runner that produced results' },
+            environment: { type: 'string', enum: ['localhost', 'production', 'ci', 'ephemeral', 'other'], description: 'Environment where tests ran (optional)' },
             commitSha: { type: 'string', description: 'Git commit SHA (optional)' },
             branch: { type: 'string', description: 'Git branch name (optional)' },
             summary: {
@@ -3326,7 +3326,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
             type: { type: 'string', enum: ['unit', 'integration', 'performance', 'e2e'], description: 'Filter by test type (optional)' },
-            runner: { type: 'string', enum: ['jest', 'playwright', 'manual', 'generic'], description: 'Filter by test runner (optional)' },
+            runner: { type: 'string', enum: ['jest', 'playwright', 'vitest', 'manual', 'generic'], description: 'Filter by test runner (optional)' },
             suiteId: { type: 'string', description: 'Filter by test suite UUID (optional)' },
             entityType: { type: 'string', enum: ['Module', 'Feature', 'Issue'], description: 'Filter by linked entity type (optional)' },
             entityId: { type: 'string', description: 'Filter by linked entity UUID (optional)' },
@@ -3342,8 +3342,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
-            runner: { type: 'string', enum: ['jest', 'playwright', 'manual', 'other'], description: 'Filter by runner (optional)' },
-            environment: { type: 'string', enum: ['localhost', 'production', 'ci', 'other'], description: 'Filter by environment (optional)' },
+            runner: { type: 'string', enum: ['jest', 'playwright', 'vitest', 'manual', 'other'], description: 'Filter by runner (optional)' },
+            environment: { type: 'string', enum: ['localhost', 'production', 'ci', 'ephemeral', 'other'], description: 'Filter by environment (optional)' },
             limit: { type: 'number', description: 'Max results (default 20)' },
           },
           required: ['projectSlug'],
