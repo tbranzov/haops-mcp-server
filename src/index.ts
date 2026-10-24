@@ -2297,6 +2297,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description:
                 "F4: how to resolve composed protocols. 'lazy' (default) returns the boot section + Ability manifest; agent fetches Ability bodies via haops_read_skill. 'bundle' returns the full composed markdown in one shot. Ignored for legacy projects.",
             },
+            raw: {
+              type: 'boolean',
+              description:
+                'When true, return the server JSON verbatim — including `templateId` and the full `skillsConfig` ({enabledSkillIds, disabledSkillIds, customContent}). Use this BEFORE haops_update_protocol: skillsConfig is a REPLACE, so read the current values here and resend them verbatim plus your change.',
+            },
           },
           required: ['projectSlug', 'role'],
         },
@@ -6981,11 +6986,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'haops_read_protocol') {
     try {
-      const { projectSlug, role, version, mode } = args as {
+      const { projectSlug, role, version, mode, raw } = args as {
         projectSlug: string;
         role: string;
         version?: number;
         mode?: 'lazy' | 'bundle';
+        raw?: boolean;
       };
 
       // Explicit arg validation (2026-07-07): every booting agent calls this
@@ -7024,6 +7030,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         version,
         effectiveMode,
       );
+
+      if (raw) {
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
 
       // F4: the response shape depends on the resolver mode. We render each
       // shape into the same human-readable text envelope so the agent gets
