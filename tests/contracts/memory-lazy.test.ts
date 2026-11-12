@@ -126,7 +126,8 @@ async function invokeReadMemory(
 
   const modeArg = args.mode;
   const lazyDefault = env.HAOPS_MEMORY_LAZY_DEFAULT === 'true';
-  const effectiveMode: 'eager' | 'lazy' = modeArg ?? (lazyDefault ? 'lazy' : 'eager');
+  // full:true explicitly asks for bodies, so it beats the env lazy default (an explicit mode still wins).
+  const effectiveMode: 'eager' | 'lazy' = modeArg ?? (full === true ? 'eager' : lazyDefault ? 'lazy' : 'eager');
   const CONSOLIDATE_THRESHOLD = parseInt(env.HAOPS_MEMORY_CONSOLIDATE_THRESHOLD ?? '15', 10);
 
   const memory = await apiClient.readMemory(projectSlug, entityType, entityId, full);
@@ -197,7 +198,7 @@ async function invokeReadMemory(
     lines.push('');
 
     lines.push(`## Unconsolidated log headers (${pendingEntries.length})`);
-    lines.push('(headers only — fetch body via haops_read_memory(full:true) for a specific entity)');
+    lines.push('(headers only — fetch bodies via haops_read_memory(full:true), without mode:"lazy")');
     for (const entry of pendingEntries) {
       lines.push(`- [${entry.timestamp}] [${entry.tag}] by ${entry.author}`);
     }
@@ -499,6 +500,43 @@ describe('haops_read_memory — lazy mode (ADR-027 I6)', () => {
       const output = await invokeReadMemory({ ...BASE_ARGS, mode: 'lazy' }, client, {});
 
       expect(output).toContain('INDEX');
+    });
+  });
+
+  // ── full:true beats the lazy env default ─────────────────────────────────
+  describe('full:true with HAOPS_MEMORY_LAZY_DEFAULT=true', () => {
+    const LAZY = { HAOPS_MEMORY_LAZY_DEFAULT: 'true' };
+
+    it('full:true returns log bodies (eager) despite lazy default', async () => {
+      const client = makeMockApiClient(makeMemory(3));
+      const output = await invokeReadMemory({ ...BASE_ARGS, full: true }, client, LAZY);
+      expect(output).toContain('Full body text for log entry 1');
+      expect(output).not.toContain('INDEX');
+    });
+
+    it('no full param keeps the lazy index (default unchanged)', async () => {
+      const client = makeMockApiClient(makeMemory(3));
+      const output = await invokeReadMemory({ ...BASE_ARGS }, client, LAZY);
+      expect(output).toContain('INDEX');
+      expect(output).not.toContain('Full body text for log entry 1');
+    });
+
+    it('full:false keeps the lazy index', async () => {
+      const client = makeMockApiClient(makeMemory(3));
+      const output = await invokeReadMemory({ ...BASE_ARGS, full: false }, client, LAZY);
+      expect(output).toContain('INDEX');
+    });
+
+    it('explicit mode=lazy still wins over full:true', async () => {
+      const client = makeMockApiClient(makeMemory(3));
+      const output = await invokeReadMemory({ ...BASE_ARGS, full: true, mode: 'lazy' }, client, LAZY);
+      expect(output).toContain('INDEX');
+    });
+
+    it('eager without lazy env and full:true is unchanged', async () => {
+      const client = makeMockApiClient(makeMemory(3));
+      const output = await invokeReadMemory({ ...BASE_ARGS, full: true }, client, {});
+      expect(output).toContain('Log Entries (all: 3)');
     });
   });
 });

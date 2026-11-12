@@ -6784,7 +6784,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // on the MCP server to flip the default. Eager is the default otherwise.
       const { mode: modeArg } = args as { mode?: 'eager' | 'lazy' };
       const lazyDefault = process.env.HAOPS_MEMORY_LAZY_DEFAULT === 'true';
-      const effectiveMode: 'eager' | 'lazy' = modeArg ?? (lazyDefault ? 'lazy' : 'eager');
+      // full:true explicitly asks for bodies, so it beats the env lazy default (an explicit mode still wins).
+      const effectiveMode: 'eager' | 'lazy' = modeArg ?? (full === true ? 'eager' : lazyDefault ? 'lazy' : 'eager');
 
       const CONSOLIDATE_THRESHOLD = parseInt(process.env.HAOPS_MEMORY_CONSOLIDATE_THRESHOLD ?? '15', 10);
 
@@ -6867,7 +6868,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // ── Log headers only (no bodies) ───────────────────────────────────────
         lines.push(`## Unconsolidated log headers (${pendingEntries.length})`);
-        lines.push('(headers only — fetch body via haops_read_memory(full:true) for a specific entity)');
+        lines.push('(headers only — fetch bodies via haops_read_memory(full:true), without mode:"lazy")');
         for (const entry of pendingEntries) {
           lines.push(`- [${entry.timestamp}] [${entry.tag}] by ${entry.author}`);
         }
@@ -6878,7 +6879,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         lines.push(
           '─── Fetch detail on demand ───────────────────────────────────────────────────',
           '• Doc section body:  haops_get_doc_section(projectSlug, artifactSlug, sectionSlug)',
-          '• Full memory+logs:  haops_read_memory(entityType, entityId, full:true)',
+          '• Full memory+logs:  haops_read_memory(entityType, entityId, full:true)  (full:true returns bodies even when lazy is the server default)',
           '• Keyword search (BM25): haops_rag_query(projectSlug, query)',
         );
 
