@@ -270,6 +270,11 @@ export interface MemoryLogEntry {
   tag: string;
   content: string;
   integrated: boolean;
+  /** Decision ledger fields (server-side, optional; present only on tag=decision entries). */
+  title?: string;
+  status?: 'active' | 'superseded';
+  supersedes?: string;
+  supersededBy?: string;
 }
 
 export interface MemoryMeta {

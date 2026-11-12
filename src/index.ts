@@ -29,6 +29,7 @@ import path from 'path';
 import os from 'os';
 import 'dotenv/config';
 import { recordToolCall } from './telemetry.js';
+import { LAZY_LOG_HINT, formatLazyLogHeader } from './memoryFormat.js';
 
 const HAOPS_API_URL = process.env.HAOPS_API_URL || 'http://localhost:3000';
 const HAOPS_API_KEY = process.env.HAOPS_API_KEY;
@@ -2158,11 +2159,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           '  • Architecture doc tree (headers only: title [artifactSlug/sectionSlug])',
           '  • ADR index (headers only)',
           '  • Active work — in-progress modules + features',
-          '  • Log headers only (timestamp · tag · author) — NO bodies',
+          '  • Log headers only (timestamp · tag · author · entry id · title when present) — NO bodies',
           '  Agent then fetches detail on demand via haops_get_doc_section / haops_read_memory(full:true) / haops_rag_query.',
           '  For entityType=module/feature in lazy mode: falls back to eager (entity baseText is already thin).',
           '',
-          'Use full=true (eager mode only) to include integrated (historical) log entries.',
+          'full=true returns the full log with bodies, including integrated (historical) entries, and wins over the server lazy default (an explicit mode:"lazy" still gives the index).',
           'Lazy default can be enabled via HAOPS_MEMORY_LAZY_DEFAULT=true env var on the MCP server.',
         ].join('\n'),
         inputSchema: {
@@ -6868,9 +6869,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // ── Log headers only (no bodies) ───────────────────────────────────────
         lines.push(`## Unconsolidated log headers (${pendingEntries.length})`);
-        lines.push('(headers only — fetch bodies via haops_read_memory(full:true), without mode:"lazy")');
+        lines.push(LAZY_LOG_HINT);
         for (const entry of pendingEntries) {
-          lines.push(`- [${entry.timestamp}] [${entry.tag}] by ${entry.author}`);
+          lines.push(formatLazyLogHeader(entry));
         }
         if (memory.meta.lastConsolidated) {
           lines.push('', `Last consolidated: ${memory.meta.lastConsolidated} by ${memory.meta.consolidatedBy}`);

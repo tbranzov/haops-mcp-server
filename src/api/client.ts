@@ -1,4 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
+import { buildErrorMessage, type ApiErrorBody } from './errorDetail.js';
 import type {
   Project,
   Module,
@@ -122,8 +123,8 @@ export class HAOpsApiClient {
 
   private handleError(error: unknown): never {
     if (axios.isAxiosError(error)) {
-      const axiosError = error as AxiosError<{ error?: string }>;
-      const message = axiosError.response?.data?.error || axiosError.message;
+      const axiosError = error as AxiosError<ApiErrorBody>;
+      const message = buildErrorMessage(axiosError.response?.data, axiosError.message);
       const statusCode = axiosError.response?.status;
       throw new HAOpsApiError(message, statusCode, axiosError.response?.data);
     }
