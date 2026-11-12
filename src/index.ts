@@ -30,6 +30,7 @@ import os from 'os';
 import 'dotenv/config';
 import { recordToolCall } from './telemetry.js';
 import { LAZY_LOG_HINT, formatLazyLogHeader } from './memoryFormat.js';
+import { readMemoryEntryTool, listDecisionsTool, getTimelineTool } from './decisionTimelineTools.js';
 
 const HAOPS_API_URL = process.env.HAOPS_API_URL || 'http://localhost:3000';
 const HAOPS_API_KEY = process.env.HAOPS_API_KEY;
@@ -2223,6 +2224,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Content of the log entry (markdown supported)',
             },
+            title: {
+              type: 'string',
+              description: 'Required for tag "decision": one line stating the decision (max 200 chars); the content holds the why. Ignored for other tags.',
+            },
+            supersedes: {
+              type: 'string',
+              description: 'Tag "decision" only: id of an active decision in the SAME entity memory that this one replaces (it is marked superseded).',
+            },
             verbose: {
               type: 'boolean',
               description: 'If true, return the full API response instead of the compact summary (default: false)',
@@ -3819,6 +3828,56 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: { type: 'string', enum: ['all', 'modules', 'features', 'issues'], description: 'Entity type filter (default: all)' },
             assignee: { type: 'string', description: 'Filter by assignee UUID, or "all" (default: all)' },
             status: { type: 'string', description: 'Filter by status value, or "all" (default: all)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      // ===== Decision ledger & timeline (R2) =====
+      {
+        name: 'haops_read_memory_entry',
+        description: 'Read one memory log entry in full by id (pending or integrated): body, author, time, and for decisions title, status and supersedes chain. Use it for an id from haops_read_memory headers or haops_list_decisions.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            entryId: { type: 'string', description: 'Memory entry id' },
+          },
+          required: ['projectSlug', 'entryId'],
+        },
+      },
+      {
+        name: 'haops_list_decisions',
+        description: 'List a project\'s decisions (memory entries tagged "decision"), newest first, without bodies. Active only by default; start here after compaction. Read the full text with haops_read_memory_entry.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            scope: { type: 'string', description: '"project", "module:<uuid>" or "feature:<uuid>". Omit for the project plus all its modules and features.' },
+            activeOnly: { type: 'boolean', description: 'Only active decisions (default: true). false also lists superseded ones.' },
+            since: { type: 'string', description: 'ISO date-time; only decisions at or after it' },
+            limit: { type: 'number', description: 'Max results (default 20, max 100)' },
+          },
+          required: ['projectSlug'],
+        },
+      },
+      {
+        name: 'haops_get_timeline',
+        description: 'Read-only project history across audit, memory, diagrams, docs, protocols, git, merge requests and deploys, newest first. Default window 48 h (max 30 days), limit 50 (max 200). No cursor: if truncated, narrow the window or filters.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            since: { type: 'string', description: 'ISO date-time start (default: 48 h before until)' },
+            until: { type: 'string', description: 'ISO date-time end (default: now)' },
+            sources: {
+              type: 'array',
+              items: { type: 'string', enum: ['audit', 'memory', 'diagram', 'doc', 'protocol', 'git', 'merge_request', 'deploy'] },
+              description: 'Restrict to these sources (default: all)',
+            },
+            actorKind: { type: 'string', enum: ['human', 'agent', 'system', 'unknown'], description: 'Only events by this kind of actor' },
+            entityType: { type: 'string', description: 'Only events on this entity type' },
+            entityId: { type: 'string', description: 'Only events on this entity id' },
+            limit: { type: 'number', description: 'Max events (default 50, max 200)' },
           },
           required: ['projectSlug'],
         },
@@ -6936,9 +6995,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: string;
       };
 
-      const { verbose } = args as { verbose?: boolean };
+      const { verbose, title, supersedes } = args as { verbose?: boolean; title?: string; supersedes?: string };
       const entry = await apiClient.appendMemoryLog(
         projectSlug, entityType, entityId, tag as 'context' | 'decision' | 'progress' | 'issue' | 'review' | 'deploy', content,
+        { title, supersedes },
       );
       // Compact: {id, timestamp, tag} only — no content echo (M1+M5)
       const e = entry as unknown as Record<string, unknown>;
@@ -9569,6 +9629,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   // ===== Notifications =====
+
+  if (name === 'haops_read_memory_entry') {
+    return readMemoryEntryTool(apiClient, args as { projectSlug: string; entryId: string });
+  }
+
+  if (name === 'haops_list_decisions') {
+    return listDecisionsTool(apiClient, args as Parameters<typeof listDecisionsTool>[1]);
+  }
+
+  if (name === 'haops_get_timeline') {
+    return getTimelineTool(apiClient, args as Parameters<typeof getTimelineTool>[1]);
+  }
 
   if (name === 'haops_list_notifications') {
     try {

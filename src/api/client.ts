@@ -1472,11 +1472,16 @@ export class HAOpsApiClient {
     entityId: string,
     tag: MemoryTag,
     content: string,
+    decision?: { title?: string; supersedes?: string },
   ): Promise<MemoryLogEntry> {
     try {
+      // title/supersedes are sent only when given; the server requires a title for tag "decision".
+      const body: Record<string, unknown> = { tag, content };
+      if (decision?.title !== undefined) body.title = decision.title;
+      if (decision?.supersedes !== undefined) body.supersedes = decision.supersedes;
       const response = await this.axios.post<MemoryLogEntry>(
         `/api/projects/${projectSlug}/memory/${entityType}/${entityId}`,
-        { tag, content },
+        body,
       );
       return response.data;
     } catch (error) {
