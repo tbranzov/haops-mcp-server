@@ -30,6 +30,7 @@ import os from 'os';
 import 'dotenv/config';
 import { recordToolCall } from './telemetry.js';
 import { LAZY_LOG_HINT, formatLazyLogHeader } from './memoryFormat.js';
+import { lintDiagramTool, splitWriteWarnings } from './diagramLintTools.js';
 import { readMemoryEntryTool, listDecisionsTool, getTimelineTool } from './decisionTimelineTools.js';
 
 const HAOPS_API_URL = process.env.HAOPS_API_URL || 'http://localhost:3000';
@@ -3861,6 +3862,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: 'haops_lint_diagram',
+        description: 'Lint a diagram\'s STORED content (read-only, writes nothing): returns findings grouped by severity (crash, high, medium, low) with code, element id and fix text, capped. Use it after writing a diagram, or on one someone else wrote, to find what a human could not see, select or repair.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            projectSlug: { type: 'string', description: 'The project slug (URL identifier)' },
+            diagramId: { type: 'string', description: 'UUID of the diagram' },
+          },
+          required: ['projectSlug', 'diagramId'],
+        },
+      },
+      {
         name: 'haops_get_timeline',
         description: 'Read-only project history across audit, memory, diagrams, docs, protocols, git, merge requests and deploys, newest first. Default window 48 h (max 30 days), limit 50 (max 200). No cursor: if truncated, narrow the window or filters.',
         inputSchema: {
@@ -4524,7 +4537,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           + 'change, and retry. skipPrecondition:true forces a blind overwrite. When sending `content`, send the '
           + 'FULL {nodes, edges, viewport} object — no partial/single-element patches; use '
           + 'haops_add_diagram_element / haops_update_diagram_element / haops_delete_diagram_element / '
-          + 'haops_batch_diagram_elements for single- or multi-element edits.',
+          + 'haops_batch_diagram_elements for single- or multi-element edits.'
+          + ' Writes are linted: the response lists `warnings` (crash-severity first); fix them, and check with haops_lint_diagram.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -4768,7 +4782,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           + 'yourself? Add elements with rough/zero positions, then call haops_auto_arrange_diagram once — it lays '
           + 'everything out and persists it. Edge: {id?, source, target (existing node ids), type:"generic", '
           + 'sourceHandle?, targetHandle? (format `${side}-source`/`${side}-target`, side∈top|right|bottom|left)}. '
-          + 'ids auto-generate if omitted.',
+          + 'ids auto-generate if omitted.'
+          + ' Writes are linted: the response lists `warnings` (crash-severity first); fix them, and check with haops_lint_diagram.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -4813,7 +4828,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           + 'shallow-merges the given patch into the matching element (`data` is merged key-by-key, not replaced '
           + 'wholesale), and writes back with the freshly-read contentHash as the precondition. Errors (no write) '
           + "if elementId is not found. On a 409, nothing is written — retry the same call. Updating several "
-          + 'elements at once? Use haops_batch_diagram_elements instead.',
+          + 'elements at once? Use haops_batch_diagram_elements instead.'
+          + ' Writes are linted: the response lists `warnings` (crash-severity first); fix them, and check with haops_lint_diagram.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -4838,7 +4854,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           + 'matching element, writes back with the freshly-read contentHash as the precondition. Deleting a NODE '
           + 'also removes every edge whose source or target references it (reports how many in the response) — no '
           + 'dangling edges left behind. Errors (no write) if elementId is not found. On a 409, nothing is written '
-          + '— retry the same call. Deleting several elements at once? Use haops_batch_diagram_elements instead.',
+          + '— retry the same call. Deleting several elements at once? Use haops_batch_diagram_elements instead.'
+          + ' Writes are linted: the response lists `warnings` (crash-severity first); fix them, and check with haops_lint_diagram.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -4862,7 +4879,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           + "e.g. add.edges may target an id from add.nodes in the same call (ids are resolved/assigned before "
           + 'edges are appended). On 409 stale, nothing is written — just retry the same call. Add elements with '
           + 'rough/zero positions and follow up with haops_auto_arrange_diagram if you don\'t want to compute '
-          + 'layout yourself.',
+          + 'layout yourself.'
+          + ' Writes are linted: the response lists `warnings` (crash-severity first); fix them, and check with haops_lint_diagram.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -4921,7 +4939,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           + 'batch of elements with placeholder positions, or any time a diagram\'s layout has gotten tangled. '
           + 'Nodes NOT connected by any edge keep a stable relative order but are packed below the connected graph '
           + '(dagre only lays out graph structure). No-op (returns immediately) for bpmn diagrams and diagrams with '
-          + 'fewer than 2 nodes. On 409 stale, nothing is written — retry the same call.',
+          + 'fewer than 2 nodes. On 409 stale, nothing is written — retry the same call.'
+          + ' Writes are linted: the response lists `warnings` (crash-severity first); fix them, and check with haops_lint_diagram.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -9638,6 +9657,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return listDecisionsTool(apiClient, args as Parameters<typeof listDecisionsTool>[1]);
   }
 
+  if (name === 'haops_lint_diagram') {
+    return lintDiagramTool(apiClient, args as Parameters<typeof lintDiagramTool>[1]);
+  }
+
   if (name === 'haops_get_timeline') {
     return getTimelineTool(apiClient, args as Parameters<typeof getTimelineTool>[1]);
   }
@@ -10332,7 +10355,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (current?.contentHash) data.baseContentHash = current.contentHash;
       }
       const result = await apiClient.request('PATCH', `/api/projects/${projectSlug}/diagrams/${diagramId}`, data);
-      return { content: [{ type: 'text', text: formatWriteResult('updated', result as unknown as Record<string, unknown>, !!verbose) }] };
+      const split = splitWriteWarnings(result);
+      return { content: [{ type: 'text', text: formatWriteResult('updated', split.rest as Record<string, unknown>, !!verbose) + (split.block ? `\n\n${split.block}` : '') }] };
     } catch (error) {
       if (isDiagramStale409(error)) {
         return { content: [{ type: 'text', text: diagramStaleMessage('haops_update_diagram') + ' (Re-fetch via haops_get_diagram, reapply your change, then retry.)' }], isError: true };
@@ -10582,7 +10606,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
-      return { content: [{ type: 'text', text: JSON.stringify({ addedId: newId, diagram: result }) }] };
+      const split = splitWriteWarnings(result);
+      return { content: [{ type: 'text', text: JSON.stringify({ addedId: newId, diagram: split.rest }) + (split.block ? `\n\n${split.block}` : '') }] };
     } catch (error) {
       if (isDiagramStale409(error)) {
         return { content: [{ type: 'text', text: diagramStaleMessage('haops_add_diagram_element') }], isError: true };
@@ -10622,7 +10647,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       collection[index] = merged;
 
       const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      const split = splitWriteWarnings(result);
+      return { content: [{ type: 'text', text: JSON.stringify(split.rest) + (split.block ? `\n\n${split.block}` : '') }] };
     } catch (error) {
       if (isDiagramStale409(error)) {
         return { content: [{ type: 'text', text: diagramStaleMessage('haops_update_diagram_element') }], isError: true };
@@ -10654,7 +10680,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content.edges = content.edges.filter((e) => e.source !== elementId && e.target !== elementId);
         const removedEdgeCount = beforeEdgeCount - content.edges.length;
         const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
-        return { content: [{ type: 'text', text: JSON.stringify({ deletedId: elementId, cascadedEdgesRemoved: removedEdgeCount, diagram: result }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ deletedId: elementId, cascadedEdgesRemoved: removedEdgeCount, diagram: splitWriteWarnings(result).rest }) + (splitWriteWarnings(result).block ? `\n\n${splitWriteWarnings(result).block}` : '') }] };
       } else if (elementType === 'edge') {
         const exists = content.edges.some((e) => e.id === elementId);
         if (!exists) {
@@ -10665,7 +10691,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         content.edges = content.edges.filter((e) => e.id !== elementId);
         const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
-        return { content: [{ type: 'text', text: JSON.stringify({ deletedId: elementId, cascadedEdgesRemoved: 0, diagram: result }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ deletedId: elementId, cascadedEdgesRemoved: 0, diagram: splitWriteWarnings(result).rest }) + (splitWriteWarnings(result).block ? `\n\n${splitWriteWarnings(result).block}` : '') }] };
       }
       return { content: [{ type: 'text', text: `Error deleting diagram element: unknown elementType "${elementType}" (must be "node" or "edge").` }], isError: true };
     } catch (error) {
@@ -10756,7 +10782,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
-      return { content: [{ type: 'text', text: JSON.stringify({ addedIds, cascadedEdgesRemoved, warnings: errors, diagram: result }) }] };
+      const split = splitWriteWarnings(result);
+      return { content: [{ type: 'text', text: JSON.stringify({ addedIds, cascadedEdgesRemoved, warnings: errors, diagram: split.rest }) + (split.block ? `\n\n${split.block}` : '') }] };
     } catch (error) {
       if (isDiagramStale409(error)) {
         return { content: [{ type: 'text', text: diagramStaleMessage('haops_batch_diagram_elements') }], isError: true };
@@ -10810,7 +10837,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
 
       const result = await writeDiagramContent(projectSlug, diagramId, content, current.contentHash);
-      return { content: [{ type: 'text', text: formatWriteResult('auto-arranged', result as unknown as Record<string, unknown>, false) }] };
+      const split = splitWriteWarnings(result);
+      return { content: [{ type: 'text', text: formatWriteResult('auto-arranged', split.rest as Record<string, unknown>, false) + (split.block ? `\n\n${split.block}` : '') }] };
     } catch (error) {
       if (isDiagramStale409(error)) {
         return { content: [{ type: 'text', text: diagramStaleMessage('haops_auto_arrange_diagram') }], isError: true };
