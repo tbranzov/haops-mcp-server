@@ -3863,7 +3863,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'haops_lint_diagram',
-        description: 'Lint a diagram\'s STORED content (read-only, writes nothing): returns findings grouped by severity (crash, high, medium, low) with code, element id and fix text, capped. Use it after writing a diagram, or on one someone else wrote, to find what a human could not see, select or repair.',
+        description: 'Lint a diagram\'s STORED content (read-only, writes nothing): returns findings grouped by severity (crash, high, medium, low) with code, element id and fix text, capped. For BPMN diagrams it runs the same bpmnlint rules as the editor\'s Validation panel (bpmnlint:recommended + the HAOps rules): code is the bpmnlint rule id (e.g. fake-join, haops/single-start-event), severity high for a bpmnlint error and medium for a warning, with the element id and message. Use it after writing a diagram, or on one someone else wrote, to find what a human could not see, select or repair.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -4960,20 +4960,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'haops_render_stored_diagram',
         description:
-          "Render a SAVED diagram's actual visual to SVG or PNG on demand — so an agent can \"see\" a diagram "
-          + 'without a browser (e.g. before/after checking an edit, or handing a preview to a human). Fetches the '
-          + "SAME shape-rendering pipeline the app's canvas/thumbnail use, from the diagram's CURRENT content — "
-          + 'always fresh, not a cached thumbnail. Returns SVG as an inline string, or PNG as base64. 422s BPMN '
-          + 'diagrams and diagrams with no elements yet (add elements first). Unrelated to haops_validate_diagram / '
-          + 'haops_render_diagram-style tools elsewhere in HAOps, which render raw mermaid/d2/vega-lite/bpmn SOURCE '
-          + 'TEXT you supply — this tool renders a STORED Diagram Studio diagram by id.',
+          "Render a SAVED diagram to SVG, PNG or PDF on demand, so an agent can \"see\" a diagram without a browser "
+          + '(e.g. before/after checking an edit, or handing a preview to a human). Renders the diagram\'s CURRENT '
+          + 'content, always fresh, not a cached thumbnail. Works for every diagram type, BPMN included. '
+          + 'png and pdf are rendered by a real browser and match the canvas (response `method: "browser"`); if the '
+          + 'browser is unavailable the simplified renderer answers instead with `method: "legacy"` and a `notice`. '
+          + 'svg always uses the simplified renderer and is not identical to the canvas. Returns svg as an inline '
+          + 'string, png as `pngBase64`, pdf as `pdfBase64`. Errors: 422 only when the diagram has no content yet; '
+          + '503 means the renderer is busy, retry after the Retry-After delay; 413 means the diagram is too large. '
+          + 'Unrelated to haops_validate_diagram / haops_render_diagram-style tools elsewhere in HAOps, which render raw '
+          + 'mermaid/d2/vega-lite/bpmn SOURCE TEXT you supply; this tool renders a STORED Diagram Studio diagram by id.',
         inputSchema: {
           type: 'object',
           properties: {
             projectSlug: { type: 'string', description: 'The project slug' },
             diagramId: { type: 'string', description: 'Diagram UUID' },
-            format: { type: 'string', enum: ['svg', 'png'], description: 'Output format (default: "png").' },
-            scale: { type: 'number', description: 'PNG raster scale factor, 1-4 (default 2). Ignored for svg.' },
+            format: { type: 'string', enum: ['svg', 'png', 'pdf'], description: 'Output format (default: "png").' },
+            scale: { type: 'number', description: 'PNG raster scale factor, 1-4 (default 2). Ignored for svg and pdf.' },
           },
           required: ['projectSlug', 'diagramId'],
         },
@@ -10851,7 +10854,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'haops_render_stored_diagram') {
     try {
       const { projectSlug, diagramId, format, scale } = args as {
-        projectSlug: string; diagramId: string; format?: 'svg' | 'png'; scale?: number;
+        projectSlug: string; diagramId: string; format?: 'svg' | 'png' | 'pdf'; scale?: number;
       };
       const qs = new URLSearchParams();
       qs.set('format', format ?? 'png');

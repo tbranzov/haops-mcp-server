@@ -582,6 +582,15 @@ describe('haops_render_stored_diagram', () => {
     expect(url).toBe(`/api/projects/${PROJECT_SLUG}/diagrams/${DIAGRAM_ID}/render?format=png`);
   });
 
+  it('passes format=pdf and returns the pdfBase64 JSON untouched', async () => {
+    const body = { diagramId: DIAGRAM_ID, format: 'pdf', method: 'browser', pdfBase64: 'JVBERi0=' };
+    mockRequest.mockResolvedValueOnce(body);
+    const result = await callTool('haops_render_stored_diagram', { projectSlug: PROJECT_SLUG, diagramId: DIAGRAM_ID, format: 'pdf' });
+    const [, url] = callArgs();
+    expect(url).toBe(`/api/projects/${PROJECT_SLUG}/diagrams/${DIAGRAM_ID}/render?format=pdf`);
+    expect(JSON.parse(result.content[0].text)).toEqual(body);
+  });
+
   it('passes format=svg and scale through', async () => {
     mockRequest.mockResolvedValueOnce({ diagramId: DIAGRAM_ID, format: 'svg', svg: '<svg/>', width: 100, height: 50 });
     await callTool('haops_render_stored_diagram', { projectSlug: PROJECT_SLUG, diagramId: DIAGRAM_ID, format: 'svg', scale: 3 });

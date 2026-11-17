@@ -34,6 +34,19 @@ describe('haops_lint_diagram', () => {
     expect(t).toContain('NODE_HIDDEN node n2 — fix: fix NODE_HIDDEN');
   });
 
+  it('shows BPMN findings with rule id, element id, message and severity', async () => {
+    const b = (code: string, severity: string, id: string, message: string) => ({ code, severity, elementType: 'bpmn', elementId: id, message, fix: '' });
+    const { client } = clientWith(200, {
+      diagramId: 'd1', diagramType: 'bpmn', contentHash: 'h', total: 2, truncated: false,
+      byCode: { 'fake-join': 1, 'haops/single-start-event': 1 },
+      warnings: [b('fake-join', 'medium', 'J1', 'Incoming flows are not synchronized'), b('haops/single-start-event', 'high', 'Process_1', 'Process has 2 start events')],
+    });
+    const t = text(await lintDiagramTool(client, { projectSlug: 'fdev', diagramId: 'd1' }));
+    expect(t).toContain('haops/single-start-event bpmn Process_1 — Process has 2 start events');
+    expect(t).toContain('fake-join bpmn J1 — Incoming flows are not synchronized');
+    expect(t.indexOf('HIGH (1)')).toBeLessThan(t.indexOf('MEDIUM (1)'));
+  });
+
   it('says so when clean', async () => {
     const { client } = clientWith(200, { diagramId: 'd1', diagramType: 'flowchart', total: 0, warnings: [], byCode: {} });
     expect(text(await lintDiagramTool(client, { projectSlug: 'fdev', diagramId: 'd1' }))).toContain('no lint findings');
