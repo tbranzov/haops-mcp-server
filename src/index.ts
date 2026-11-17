@@ -4976,7 +4976,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             projectSlug: { type: 'string', description: 'The project slug' },
             diagramId: { type: 'string', description: 'Diagram UUID' },
             format: { type: 'string', enum: ['svg', 'png', 'pdf'], description: 'Output format (default: "png").' },
-            scale: { type: 'number', description: 'PNG raster scale factor, 1-4 (default 2). Ignored for svg and pdf.' },
+            scale: { type: 'number', description: 'Raster scale 1-4 (default 2); the browser render uses 1-3 for png and pdf. Ignored for svg.' },
           },
           required: ['projectSlug', 'diagramId'],
         },
